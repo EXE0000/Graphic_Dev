@@ -28,6 +28,7 @@ import attachments as attach_mod
 import exporters
 import fonts
 import image_gen
+import secrets_store
 import web_server
 
 from web_search import (search_web, format_search_block, to_sources,
@@ -65,11 +66,17 @@ def apply_theme():
     QApplication.instance().setStyleSheet(qss)
 DEFAULT_SYSTEM_PROMPT = """你是运行在 Graphic_Dev 桌面客户端中的 AI 助手。
 
-## 运行环境
-- 客户端使用 KaTeX 实时渲染数学公式，支持 aligned / matrix / pmatrix / cases / \\frac / \\sqrt / \\int / \\sum 等常用环境。
-- 你的回复会以 Markdown 渲染。
+- 风格：直接、具体、不绕弯子；不确定就明说，不编造。
+- 语言：默认简体中文；用户使用其他语言时跟随用户。"""
 
-## 输出格式
+
+# 下面这段是「内置能力说明」，无论用户怎么改系统提示词都会附加在末尾，
+# 保证公式渲染、图表、配图、引用这些客户端能力始终可用。
+CAPABILITY_PROMPT = """## 运行环境（内置说明，始终生效）
+- 客户端使用 KaTeX 实时渲染 LaTeX，支持 \\frac、\\sqrt、\\int、\\sum 以及 aligned / matrix / pmatrix / cases 等环境。
+- 回复按 Markdown 渲染，支持标题、表格、列表、代码块。
+
+## 公式格式
 - 数学表达式一律用 LaTeX：行内 $...$，独立成行 $$...$$。
 - 禁止用 Unicode 符号（√ ± ∫ ∑）拼接公式，禁止用 ASCII 字符画分数线。
 - 除用户明确要求查看源码，不要把公式放进 ```latex 代码块。
@@ -84,11 +91,21 @@ DEFAULT_SYSTEM_PROMPT = """你是运行在 Graphic_Dev 桌面客户端中的 AI 
 - 不要用文字画条形图，也不要用 Markdown 表格代替图表。
 
 ## 行为约束
-- 不要声称"无法渲染公式"或"只能用视觉效果模拟"。
-- 不确定的事实要说明不确定，不要编造引用或数据。
+- 不要声称"无法渲染公式"或"只能用文字模拟图表"。
+- 涉及事实时给出可核对的来源；不确定就说明不确定。"""
 
-## 语言
-- 默认使用简体中文回复；用户使用其他语言时跟随用户。"""
+
+IMAGE_CAPABILITY = """## 配图（内置说明）
+- 用户要求「画一张 / 生成图片 / 配个图 / 示意图」时，调用 generate_image 工具。
+- 不要用 ASCII 字符画、表格或文字描述代替图片。
+- 不要自己编造图片链接，工具生成的图会直接展示给用户。"""
+
+
+SEARCH_CAPABILITY = """## 联网检索（内置说明）
+- 问题涉及实时事件、近期数据、价格、新闻，或你不确定、可能过时的知识时，调用 web_search 工具；复杂问题可拆成多次调用。
+- 引用搜索结果时用 [1][2] 标注编号，编号必须对应真实返回的结果。
+- 没有检索到的内容不要编造引用或链接。"""
+
 
 NON_CHAT_KEYWORDS = ("embedding", "rerank", "tts", "whisper", "moderation")
 
@@ -759,17 +776,36 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.textBrowser.loadFinished.connect(self._on_web_loaded)
         self.textBrowser.load(QUrl.fromLocalFile(str(WEB_DIR / "chat.html")))
 
+    SECRET_KEYS = ("api_key", "image_key", "search_key")
+
+    def _secret(self, name):
+        """读密钥：钥匙串优先；旧的明文值迁移过去并从 QSettings 删除。"""
+        value = secrets_store.get(name)
+        if value:
+            return value
+
+        legacy = self._settings.value(name, "", type=str)
+        if legacy:
+            secrets_store.set(name, legacy)
+            self._settings.remove(name)
+            self._settings.sync()
+        return legacy
+
     def _load_settings(self):
         s = self._settings
-        key = s.value("api_key", "", type=str)
+        key = self._secret("api_key")
         if key:
             self.api_key_text.setText(key)
         url = s.value("api_url", "", type=str)
         if url:
             self.api_url_text.setText(url)
-        self.prompt_text.setPlainText(
-            s.value("system_prompt", DEFAULT_SYSTEM_PROMPT, type=str)
-        )
+        saved_prompt = s.value("system_prompt", "", type=str)
+        # 旧版本把「能力说明」也存进了用户提示词里，这里识别并替换成新版人设，
+        # 否则会和内置能力说明重复一份。
+        if (saved_prompt.strip().startswith("你是运行在 Graphic_Dev")
+                and "## 输出格式" in saved_prompt):
+            saved_prompt = DEFAULT_SYSTEM_PROMPT
+        self.prompt_text.setPlainText(saved_prompt or DEFAULT_SYSTEM_PROMPT)
 
         def _read(name):
             raw = s.value(name, "", type=str)
@@ -782,14 +818,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._selected_by_url = _read("selected_by_url")
         self._current_url = self._norm_url(self.api_url_text.text())
         self._load_models_for_url(self._current_url)
-        self.search_key_text.setText(s.value("search_key", "", type=str))
+        self.search_key_text.setText(self._secret("search_key"))
         self.ensure_delete_conversation_again_checkbox.setChecked(
             str(s.value("confirm_delete", "true")).lower() == "true")
         self.reasoning_check.setChecked(
             str(s.value("deep_thinking", "true")).lower() == "true")
+        self.capability_prompt_check.setChecked(
+            str(s.value("capability_prompt", "true")).lower() == "true")
         self.image_model_text.setText(s.value("image_model", "", type=str))
         self.image_url_text.setText(s.value("image_url", "", type=str))
-        self.image_key_text.setText(s.value("image_key", "", type=str))
+        self.image_key_text.setText(self._secret("image_key"))
         saved_size = s.value("image_size", "1024x1024", type=str)
         size_index = self.image_size_combo.findText(saved_size)
         if size_index >= 0:
@@ -800,29 +838,54 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.search_provider_combo.setCurrentIndex(idx)
         self.search_check.setChecked(str(s.value("use_search", "false")).lower() == "true")
 
+        if not self.capability_prompt_check.isChecked():
+            # 延后一点，避免被初始化阶段其它状态提示覆盖
+            QTimer.singleShot(1200, lambda: self.statusbar.showMessage(
+                "内置能力说明已关闭，公式 / 图表 / 配图可能不渲染", 10000))
+
+        tip = "密钥保存在：" + secrets_store.status_text()
+        for widget in (self.api_key_text, self.image_key_text, self.search_key_text):
+            widget.setToolTip(tip)
+
     def _save_settings(self):
         s = self._settings
-        s.setValue("api_key", self.api_key_text.text().strip())
+        for name, widget in (("api_key", self.api_key_text),
+                             ("image_key", self.image_key_text),
+                             ("search_key", self.search_key_text)):
+            secrets_store.set(name, widget.text().strip())
+            s.remove(name)                      # 旧版本可能留下明文副本
         s.setValue("api_url", self.api_url_text.text().strip())
         s.setValue("system_prompt", self.prompt_text.toPlainText())
-        self._models_by_url[self._current_url] = self._existing_models()
-        self._selected_by_url[self._current_url] = self.current_model()
+        if self._current_url:
+            self._models_by_url[self._current_url] = self._existing_models()
+            self._selected_by_url[self._current_url] = self.current_model()
         s.setValue("models_by_url", json.dumps(self._models_by_url, ensure_ascii=False))
         s.setValue("selected_by_url", json.dumps(self._selected_by_url, ensure_ascii=False))
-        s.setValue("search_key", self.search_key_text.text().strip())
         s.setValue("search_provider", self.search_provider_combo.currentData() or DEFAULT_PROVIDER)
         s.setValue("confirm_delete",
                    self.ensure_delete_conversation_again_checkbox.isChecked())
         s.setValue("deep_thinking", self.reasoning_check.isChecked())
+        s.setValue("capability_prompt", self.capability_prompt_check.isChecked())
         s.setValue("use_search", self.search_check.isChecked())
         s.setValue("image_model", self.image_model_text.text().strip())
         s.setValue("image_url", self.image_url_text.text().strip())
-        s.setValue("image_key", self.image_key_text.text().strip())
         s.setValue("image_size", self.image_size_combo.currentText())
+        s.sync()                                # 立刻落盘，别让旧明文留在 plist 里
 
     def system_prompt(self):
+        """用户提示词 + 内置能力说明（后者不可被用户覆盖）。"""
         text = self.prompt_text.toPlainText().strip()
-        return text or DEFAULT_SYSTEM_PROMPT
+        if not self.capability_prompt_check.isChecked():
+            return text or DEFAULT_SYSTEM_PROMPT      # 用户选择不使用内置说明
+
+        parts = [text or DEFAULT_SYSTEM_PROMPT, CAPABILITY_PROMPT]
+
+        if self.image_model_text.text().strip():
+            parts.append(IMAGE_CAPABILITY)
+        if self.search_check.isChecked() and self.search_key_text.text().strip():
+            parts.append(SEARCH_CAPABILITY)
+
+        return "\n\n".join(part for part in parts if part.strip())
 
     def closeEvent(self, event):
         if self.web_server is not None:
@@ -1048,8 +1111,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         url = self._norm_url(self.api_url_text.text())
         if url == self._current_url:
             return
-        self._models_by_url[self._current_url] = self._existing_models()
-        self._selected_by_url[self._current_url] = self.current_model()
+        if self._current_url:
+            self._models_by_url[self._current_url] = self._existing_models()
+            self._selected_by_url[self._current_url] = self.current_model()
         self._current_url = url
         self._load_models_for_url(url)
 
@@ -1113,6 +1177,67 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
         self.models_table.removeRow(row)
         self._refresh_model_label()
+
+    def _on_capability_toggled(self, checked):
+        """关闭内置能力说明时提醒后果；重新打开也确认一下。"""
+        if checked:
+            self.statusbar.showMessage("已启用内置能力说明", 5000)
+        else:
+            self.statusbar.showMessage(
+                "内置能力说明已关闭，公式 / 图表 / 配图可能不渲染", 10000)
+
+    def on_clear_config(self):
+        """一键清空本机配置（含钥匙串里的密钥），聊天记录不受影响。"""
+        ret = QMessageBox.question(
+            self,
+            "清空所有配置",
+            "确定要清空所有配置吗？\n\n"
+            "会删除：API 地址与密钥、图片接口配置、搜索 Key、\n"
+            "模型列表、系统提示词、界面偏好。\n\n"
+            "聊天记录和已生成的图片不会被删除。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+
+        # 1) 落盘配置
+        self._settings.clear()
+        self._settings.sync()
+
+        # 2) 密钥（钥匙串 + 兜底文件）
+        try:
+            secrets_store.clear()
+        except Exception:                              # noqa: BLE001
+            pass
+
+        # 3) 界面复位
+        self._models_by_url = {}
+        self._selected_by_url = {}
+        self._current_url = ""
+        self.models_table.setRowCount(0)
+        self.api_key_text.clear()
+        self.api_url_text.clear()
+        self.search_key_text.clear()
+        self.image_key_text.clear()
+        self.image_url_text.clear()
+        self.image_model_text.clear()
+        self.prompt_text.setPlainText(DEFAULT_SYSTEM_PROMPT)
+        self.image_size_combo.setCurrentIndex(0)
+        index = self.search_provider_combo.findData(DEFAULT_PROVIDER)
+        if index >= 0:
+            self.search_provider_combo.setCurrentIndex(index)
+        self.ensure_delete_conversation_again_checkbox.setChecked(True)
+        self.reasoning_check.setChecked(True)
+        self.capability_prompt_check.setChecked(True)
+        self.search_check.setChecked(False)
+
+        if hasattr(self, "model_select_name"):
+            self.model_select_name.setText("")
+        self._refresh_model_label()
+
+        self._save_settings()
+        self.statusbar.showMessage("配置已清空，请重新填写 API 地址和密钥", 8000)
 
     def clear_all_models(self):
         count = self.models_table.rowCount()
@@ -1520,6 +1645,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.attach_button.clicked.connect(self.on_attach)
         self.image_models_button.clicked.connect(self.pick_image_model)
         self.web_open_button.clicked.connect(self.open_web_ui)
+        self.clear_config_button.clicked.connect(self.on_clear_config)
+        self.capability_prompt_check.toggled.connect(
+            self._on_capability_toggled)
 
     def _on_search_toggled(self, checked):
         """勾选联网搜索但没配 KEY 时，立刻提示，不等发送时再拦。"""

@@ -287,7 +287,7 @@
                  </size>
                 </property>
                 <property name="placeholderText">
-                 <string>留空则使用内置的默认提示词</string>
+                 <string>留空使用默认人设；公式 / 图表 / 配图 / 引用等内置能力说明会自动附加</string>
                 </property>
                </widget>
               </item>
@@ -559,6 +559,33 @@
               </item>
              </layout>
             </item>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_clear">
+              <item>
+               <widget class="QPushButton" name="clear_config_button">
+                <property name="toolTip">
+                 <string>删除本机的 API 地址、密钥、模型列表、系统提示词等配置（不影响聊天记录）</string>
+                </property>
+                <property name="text">
+                 <string>清空所有配置</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacer_clear">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
            </layout>
             </widget>
            </widget>
@@ -587,6 +614,19 @@
           </property>
           <item>
            <layout class="QVBoxLayout" name="verticalLayout_8">
+            <item>
+             <widget class="QCheckBox" name="capability_prompt_check">
+              <property name="toolTip">
+               <string>开启后，无论系统提示词怎么写，都会自动附加公式、图表、配图、引用等客户端能力说明</string>
+              </property>
+              <property name="text">
+               <string>附加内置能力说明（公式 / 图表 / 配图 / 引用）</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
             <item>
              <widget class="QCheckBox" name="ensure_delete_conversation_again_checkbox">
               <property name="text">

@@ -339,6 +339,20 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_5.addLayout(self.verticalLayout_4)
 
+        self.horizontalLayout_clear = QHBoxLayout()
+        self.horizontalLayout_clear.setObjectName(u"horizontalLayout_clear")
+        self.clear_config_button = QPushButton(self.config_scroll_contents)
+        self.clear_config_button.setObjectName(u"clear_config_button")
+
+        self.horizontalLayout_clear.addWidget(self.clear_config_button)
+
+        self.horizontalSpacer_clear = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.horizontalLayout_clear.addItem(self.horizontalSpacer_clear)
+
+
+        self.verticalLayout_5.addLayout(self.horizontalLayout_clear)
+
         self.config_scroll.setWidget(self.config_scroll_contents)
 
         self.verticalLayout_6.addWidget(self.config_scroll)
@@ -352,6 +366,12 @@ class Ui_MainWindow(object):
         self.verticalLayout_9.setContentsMargins(16, 16, 16, 16)
         self.verticalLayout_8 = QVBoxLayout()
         self.verticalLayout_8.setObjectName(u"verticalLayout_8")
+        self.capability_prompt_check = QCheckBox(self.page_personalize)
+        self.capability_prompt_check.setObjectName(u"capability_prompt_check")
+        self.capability_prompt_check.setChecked(True)
+
+        self.verticalLayout_8.addWidget(self.capability_prompt_check)
+
         self.ensure_delete_conversation_again_checkbox = QCheckBox(self.page_personalize)
         self.ensure_delete_conversation_again_checkbox.setObjectName(u"ensure_delete_conversation_again_checkbox")
 
@@ -409,7 +429,7 @@ class Ui_MainWindow(object):
         self.api_key_test.setText(QCoreApplication.translate("MainWindow", u"\u68c0\u6d4b", None))
         self.api_url_label.setText(QCoreApplication.translate("MainWindow", u"API \u5730\u5740:", None))
         self.prompt_label.setText(QCoreApplication.translate("MainWindow", u"\u7cfb\u7edf\u63d0\u793a\u8bcd:", None))
-        self.prompt_text.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u7559\u7a7a\u5219\u4f7f\u7528\u5185\u7f6e\u7684\u9ed8\u8ba4\u63d0\u793a\u8bcd", None))
+        self.prompt_text.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u7559\u7a7a\u4f7f\u7528\u9ed8\u8ba4\u4eba\u8bbe\uff1b\u516c\u5f0f / \u56fe\u8868 / \u914d\u56fe / \u5f15\u7528\u7b49\u5185\u7f6e\u80fd\u529b\u8bf4\u660e\u4f1a\u81ea\u52a8\u9644\u52a0", None))
         self.search_provider_label.setText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22\u63d0\u4f9b\u5546:", None))
         self.search_key_label.setText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22 KEY:", None))
         self.image_model_label.setText(QCoreApplication.translate("MainWindow", u"\u56fe\u7247\u6a21\u578b:", None))
@@ -437,7 +457,15 @@ class Ui_MainWindow(object):
         ___qtablewidgetitem1.setText(QCoreApplication.translate("MainWindow", u"\u9009\u4e2d", None))
         ___qtablewidgetitem2 = self.models_table.horizontalHeaderItem(2)
         ___qtablewidgetitem2.setText(QCoreApplication.translate("MainWindow", u"\u5220\u9664", None))
+#if QT_CONFIG(tooltip)
+        self.clear_config_button.setToolTip(QCoreApplication.translate("MainWindow", u"\u5220\u9664\u672c\u673a\u7684 API \u5730\u5740\u3001\u5bc6\u94a5\u3001\u6a21\u578b\u5217\u8868\u3001\u7cfb\u7edf\u63d0\u793a\u8bcd\u7b49\u914d\u7f6e\uff08\u4e0d\u5f71\u54cd\u804a\u5929\u8bb0\u5f55\uff09", None))
+#endif // QT_CONFIG(tooltip)
+        self.clear_config_button.setText(QCoreApplication.translate("MainWindow", u"\u6e05\u7a7a\u6240\u6709\u914d\u7f6e", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.page_api_config), QCoreApplication.translate("MainWindow", u"API \u914d\u7f6e", None))
+#if QT_CONFIG(tooltip)
+        self.capability_prompt_check.setToolTip(QCoreApplication.translate("MainWindow", u"\u5f00\u542f\u540e\uff0c\u65e0\u8bba\u7cfb\u7edf\u63d0\u793a\u8bcd\u600e\u4e48\u5199\uff0c\u90fd\u4f1a\u81ea\u52a8\u9644\u52a0\u516c\u5f0f\u3001\u56fe\u8868\u3001\u914d\u56fe\u3001\u5f15\u7528\u7b49\u5ba2\u6237\u7aef\u80fd\u529b\u8bf4\u660e", None))
+#endif // QT_CONFIG(tooltip)
+        self.capability_prompt_check.setText(QCoreApplication.translate("MainWindow", u"\u9644\u52a0\u5185\u7f6e\u80fd\u529b\u8bf4\u660e\uff08\u516c\u5f0f / \u56fe\u8868 / \u914d\u56fe / \u5f15\u7528\uff09", None))
         self.ensure_delete_conversation_again_checkbox.setText(QCoreApplication.translate("MainWindow", u"\u5220\u9664\u5bf9\u8bdd\u65f6\u5f39\u51fa\u201c\u786e\u8ba4\u5220\u9664\u201d\u5f39\u7a97", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.page_personalize), QCoreApplication.translate("MainWindow", u"\u4e2a\u6027\u5316", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.page_about), QCoreApplication.translate("MainWindow", u"\u5173\u4e8e", None))
