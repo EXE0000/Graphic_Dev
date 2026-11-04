@@ -55,6 +55,7 @@ class WebChatServer:
         self.started_at = int(time.time())
         self.conversations = {}               # id -> {id,title,created,updated,messages}
         self.attachments = []                 # 待发送附件（复用 attachments 模块）
+        self._active = 0                      # 正在生成的对话数
         self._load_conversations()
         self._httpd = None
         self._thread = None
@@ -173,6 +174,7 @@ class WebChatServer:
                     "content": message.get("content") or "",
                     "reasoning": message.get("reasoning") or "",
                     "sources": message.get("sources") or [],
+                "streaming": bool(message.get("streaming")),
                     "texts": message.get("texts") or [],
                     "images": [],
                 })
@@ -276,6 +278,7 @@ class WebChatServer:
             if query.get("t", [""])[0] != self.token:
                 return self._send_text(handler, 403, "forbidden")
             return self._send_json(handler, {"items": self.conversation_list(),
+                                             "busy": self._active > 0,
                                              "active": self.get_conversation(
                                                  query.get("conv", [""])[0])["id"]})
 
@@ -406,52 +409,84 @@ class WebChatServer:
 
         messages = self._build_messages(conv)
 
+        # 先把「正在生成」的空回答写进会话：这样切换对话、刷新页面都能看到它
+        assistant = {"role": "assistant", "content": "", "reasoning": "",
+                     "sources": [], "streaming": True}
+        conv["messages"].append(assistant)
+        self._save_conversations()
+        self._active += 1
+
         final = {"content": "", "reasoning": "", "sources": []}
+        client_gone = False
+        last_save = time.time()
+
+        def emit(event, data):
+            """写 SSE；浏览器断开后不再尝试写，但继续把回答收完。"""
+            nonlocal client_gone
+            if client_gone:
+                return
+            try:
+                send(event, data)
+            except (BrokenPipeError, ConnectionResetError):
+                client_gone = True
+
+        def persist(force=False):
+            """把当前进度写回会话（限流），刷新/切走也能看到部分内容。"""
+            nonlocal last_save
+            now = time.time()
+            if not force and now - last_save < 0.8:
+                return
+            last_save = now
+            assistant["content"] = final["content"]
+            assistant["reasoning"] = final["reasoning"]
+            assistant["sources"] = final["sources"]
+            conv["updated"] = now
+            self._save_conversations()
+
         stream = self.controller.web_stream(messages)
         try:
             for kind, data in stream:
                 if kind == "chunk":
                     final["content"] += data
-                    send("chunk", {"text": data})
+                    persist()
+                    emit("chunk", {"text": data})
                 elif kind == "think":
                     final["reasoning"] += data
-                    send("think", {"text": data})
+                    persist()
+                    emit("think", {"text": data})
                 elif kind == "note":
-                    send("note", {"text": data})
+                    emit("note", {"text": data})
                 elif kind == "sources":
                     final["sources"] = data or []
-                    send("sources", {"items": data})
+                    persist()
+                    emit("sources", {"items": data})
                 elif kind == "image":
-                    send("image", {"markdown": data})
+                    emit("image", {"markdown": data})
                 elif kind == "error":
-                    send("error", {"text": data})
+                    emit("error", {"text": data})
                     break
                 elif kind == "done":
                     # 用 worker 的最终内容：它已经把生成的图片拼进正文了。
-                    # 只累加 chunk 的话，图片 markdown 永远进不了历史/导出。
                     final["content"] = data or final["content"]
                     break
-        except (BrokenPipeError, ConnectionResetError):
-            return
         except Exception as e:                     # 兜底，别让服务线程崩掉
-            try:
-                send("error", {"text": f"{type(e).__name__}: {e}"})
-            except Exception:
-                pass
+            emit("error", {"text": f"{type(e).__name__}: {e}"})
         finally:
             stream.close()                         # 触发 worker 清理
 
         if final["content"] or final["reasoning"]:
-            conv["messages"].append({"role": "assistant",
-                                     "content": final["content"],
-                                     "reasoning": final["reasoning"],
-                                     "sources": final["sources"]})
+            assistant["content"] = final["content"]
+            assistant["reasoning"] = final["reasoning"]
+            assistant["sources"] = final["sources"]
+            assistant.pop("streaming", None)
             conv["updated"] = time.time()
-            self._save_conversations()
-        try:
-            send("done", {"ok": True})
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        else:
+            # 什么都没生成出来（比如被立刻取消），别留一个空气泡
+            conv["messages"] = [m for m in conv["messages"] if m is not assistant]
+        self._save_conversations()
+
+        self._active = max(0, self._active - 1)
+        emit("done", {"ok": True})
 
     def _build_messages(self, conv=None):
         """把会话历史拼成 API messages（附件按桌面端的规则展开）。"""
@@ -509,6 +544,7 @@ class WebChatServer:
                 "content": self._webify(message.get("content") or ""),
                 "reasoning": message.get("reasoning") or "",
                 "sources": message.get("sources") or [],
+                "streaming": bool(message.get("streaming")),
                 "attachments": [
                     {"name": t.get("name")} for t in (message.get("texts") or [])
                 ],

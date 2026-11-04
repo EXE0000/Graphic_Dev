@@ -33,6 +33,10 @@
   var convDeleteBtn = document.getElementById("conv-delete-selected");
   var convDeleteEmptyBtn = document.getElementById("conv-delete-empty");
   var convCancelBtn = document.getElementById("conv-cancel-manage");
+  var streamPoll = null;      // 轮询"仍在生成"的会话
+  var remoteStreaming = false; // 服务端仍在生成（刷新后也要显示「停止」）
+  var serverBusy = false;      // 任意会话正在生成（别的会话里要禁用发送）
+  var busyTimer = null;
   var exportAllBtn = document.getElementById("export-all");
   var exportFmt = document.getElementById("export-fmt");
   var busy = false;
@@ -165,12 +169,28 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!keepActive || !currentConv) currentConv = data.active || "";
+        serverBusy = !!data.busy;
+        updateSendState();
+        if (serverBusy) pollBusy();
         renderConversations(data.items || []);
       })
       .catch(function () {});
   }
 
   function switchConversation(cid, focusIndex) {
+    // 切走时如果原会话还在生成：断开本地连接（服务端会继续跑完），
+    // 同时标记"服务端忙"，新会话里按钮变成禁止态。
+    if (busy) {
+      try { if (currentController) currentController.abort(); } catch (e) { /* 忽略 */ }
+      busy = false;
+      currentController = null;
+      serverBusy = true;
+      pollBusy();
+    } else if (remoteStreaming) {
+      serverBusy = true;
+      pollBusy();
+    }
+    stopStreamPoll();
     var same = (cid === currentConv);
     currentConv = cid;
     if (!same) loadConversations(true);
@@ -655,6 +675,11 @@
     node.body.innerHTML = renderMarkdown(turn.content || "");
     typeset(node.body);
     decorateImages(node.body);
+    if (turn.streaming) {
+      node.turn.classList.add("streaming");
+      var badge = el("div", "streaming-badge", "生成中…");
+      node.turn.appendChild(badge);
+    }
 
     if (turn.role === "assistant") {
       var sources = renderSources({ sources: turn.sources || [] });
@@ -673,6 +698,112 @@
     keepPageTop();
   }
 
+  function updateSendState() {
+    sendBtn.classList.remove("stopping", "blocked");
+
+    if (busy) {                       // 本页正在接收流
+      sendBtn.textContent = "停止";
+      sendBtn.classList.add("stopping");
+      sendBtn.disabled = false;
+      sendBtn.title = "";
+      return;
+    }
+    if (remoteStreaming) {            // 刷新后，当前会话仍在生成
+      sendBtn.textContent = "停止";
+      sendBtn.classList.add("stopping");
+      sendBtn.disabled = false;
+      sendBtn.title = "";
+      return;
+    }
+    if (serverBusy) {                 // 别的会话正在生成 → 禁止发送
+      sendBtn.textContent = "🚫";
+      sendBtn.classList.add("blocked");
+      sendBtn.disabled = true;
+      sendBtn.title = "另一个对话正在生成，完成后再发送";
+      return;
+    }
+    sendBtn.textContent = "发送";
+    sendBtn.disabled = false;
+    sendBtn.title = "";
+  }
+
+  function pollBusy() {
+    if (busyTimer) return;
+    busyTimer = setInterval(function () {
+      fetch(api("/api/conversations"))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          serverBusy = !!data.busy;
+          updateSendState();
+          if (!serverBusy) { clearInterval(busyTimer); busyTimer = null; }
+        })
+        .catch(function () {});
+    }, 2000);
+  }
+
+  function setRemoteStreaming(on) {
+    remoteStreaming = on;
+    updateSendState();
+  }
+
+  function stopRemoteGeneration() {
+    postJSON("/api/stop", {}).catch(function () {});
+    meta.textContent = "正在停止…";
+    sendBtn.textContent = "停止中…";
+    pollBusy();
+  }
+
+  function stopStreamPoll() {
+    if (streamPoll) { clearInterval(streamPoll); streamPoll = null; }
+  }
+
+  function startStreamPoll() {
+    if (streamPoll) return;
+    streamPoll = setInterval(refreshStreaming, 1500);
+  }
+
+  function refreshStreaming() {
+    if (!currentConv) return;
+    fetch(api("/api/history"))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.id && data.id !== currentConv) return;
+        var turns = data.turns || [];
+        var last = turns.length ? turns[turns.length - 1] : null;
+        if (!last) { stopStreamPoll(); return; }
+
+        var node = chat.querySelector('.turn[data-index="' + last.index + '"]');
+        if (node) {
+          var body = node.querySelector(".body");
+          if (body && last.content) {
+            body.innerHTML = renderMarkdown(last.content);
+            typeset(body);
+            decorateImages(body);
+          }
+          var thinkBody = node.querySelector(".think-body");
+          if (thinkBody && last.reasoning) {
+            thinkBody.innerHTML = renderMarkdown(last.reasoning);
+            typeset(thinkBody);
+            var details = node.querySelector("details.think");
+            if (details) details.hidden = false;
+          }
+          if (stick) chat.scrollTop = chat.scrollHeight;
+        }
+
+        if (!last.streaming) {
+          stopStreamPoll();
+          setRemoteStreaming(false);
+          if (node) {
+            node.classList.remove("streaming");
+            var badge = node.querySelector(".streaming-badge");
+            if (badge) badge.remove();
+          }
+          loadConversations(true);
+        }
+      })
+      .catch(function () {});
+  }
+
   function loadHistory(focusIndex) {
     fetch(api("/api/history"))
       .then(function (r) { return r.json(); })
@@ -682,6 +813,16 @@
         renderConversations(conversations);   // 刷新高亮，避免切换后高亮错位
         var first = (data.turns || [])[0];
         setTitle(first ? "对话" : "新对话");
+
+        var turns = data.turns || [];
+        var lastTurn = turns.length ? turns[turns.length - 1] : null;
+        if (lastTurn && lastTurn.streaming) {
+          setRemoteStreaming(true);
+          startStreamPoll();
+        } else {
+          setRemoteStreaming(false);
+          stopStreamPoll();
+        }
 
         if (focusIndex != null) {
           var target = chat.querySelector('.turn[data-index="' + focusIndex + '"]');
@@ -762,8 +903,7 @@
     input.value = "";
     input.style.height = "auto";
     busy = true;
-    sendBtn.textContent = "停止";
-    sendBtn.classList.add("stopping");
+    updateSendState();
 
     var user = addTurn("user");
     user.body.innerHTML = renderMarkdown(text);
@@ -868,8 +1008,7 @@
     busy = false;
     currentController = null;
     keepPageTop();
-    sendBtn.textContent = "发送";
-    sendBtn.classList.remove("stopping");
+    updateSendState();
     input.focus();
   }
 
@@ -884,8 +1023,10 @@
   }
 
   sendBtn.addEventListener("click", function () {
-    if (busy) stopGeneration();
-    else send();
+    if (sendBtn.disabled) return;          // 别的会话正在生成，禁止发送
+    if (busy) { stopGeneration(); return; }
+    if (remoteStreaming) { stopRemoteGeneration(); return; }
+    send();
   });
 
   input.addEventListener("keydown", function (e) {
@@ -908,6 +1049,7 @@
     loadConversations(true);
   });
 
+  updateSendState();
   loadConversations(false);
   loadHistory();
   keepPageTop();

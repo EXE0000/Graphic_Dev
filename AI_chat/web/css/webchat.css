@@ -550,3 +550,32 @@ body {
 }
 
 .conv-item.managing { padding-left: 10px; }
+
+/* ---------- 生成中状态 ---------- */
+.streaming-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 10px;
+  border-radius: 10px;
+  background: #eef5ff;
+  color: #0969da;
+  font-size: 12px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+/* ---------- 禁止发送（别的会话正在生成） ---------- */
+#send:disabled,
+#send.blocked {
+  background: #d7dbe2;
+  color: #8b949e;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+#send:disabled:hover,
+#send.blocked:hover { background: #d7dbe2; }
