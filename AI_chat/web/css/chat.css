@@ -1,0 +1,342 @@
+/* =========================================================================
+   聊天窗口样式
+   结构：基础排版 → 气泡布局 → Markdown → 思考过程 → 联网来源 → 状态 → 回到最新
+   ========================================================================= */
+
+/* ---------- 1. 基础 ---------- */
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+}
+
+body {
+  padding: 18px 22px 64px;              /* 底部留白，避免被「回到最新」按钮盖住 */
+  font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.75;
+  color: #1f2328;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 2. 气泡布局：用户靠左，模型靠右 ---------- */
+.turn {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 12px;
+}
+
+.turn + .turn {
+  border-top: 1px solid #ececec;
+  margin-top: 14px;
+  padding-top: 22px;
+}
+
+.turn.user { align-items: flex-start; }
+.turn.ai   { align-items: flex-end; }
+
+.turn .body { max-width: 88%; min-width: 0; }
+.turn.ai   .body { background: #f4f5f7; border-radius: 10px; padding: 10px 14px; }
+.turn.user .body { background: #e8f0fe; border-radius: 10px; padding: 10px 14px; }
+
+.role {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: #8b949e;
+  margin-bottom: 8px;
+}
+.turn.user .role { color: #0969da; }
+
+/* ---------- 3. Markdown 排版 ---------- */
+.body > :first-child { margin-top: 0; }
+.body > :last-child  { margin-bottom: 0; }
+
+h1, h2, h3 { line-height: 1.35; margin: 18px 0 10px; }
+h1 { font-size: 22px; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; }
+
+p { margin: 10px 0; }
+ul, ol { margin: 10px 0; padding-left: 24px; }
+
+pre {
+  background: #f6f8fa;
+  border: 1px solid #eaeef2;
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+code, pre code {
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+:not(pre) > code {
+  background: #eff1f3;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+th, td { border: 1px solid #d8dee4; padding: 6px 12px; }
+th { background: #f6f8fa; font-weight: 600; }
+
+blockquote {
+  margin: 12px 0;
+  padding: 2px 14px;
+  border-left: 3px solid #d0d7de;
+  color: #57606a;
+}
+
+a { color: #0969da; text-decoration: none; }
+hr { border: 0; border-top: 1px solid #ececec; margin: 18px 0; }
+img { max-width: 100%; }
+
+/* ---------- 4. 思考过程折叠块 ---------- */
+.turn details.think {
+  background: #fafbfc;
+  border: 1px solid #eaeef2;
+  border-radius: 8px;
+  padding: 6px 12px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #57606a;
+  max-width: 88%;
+}
+
+.turn details.think summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.turn details.think summary::-webkit-details-marker { display: none; }
+
+.turn details.think summary::before {
+  content: "\25B8";                     /* ▸ */
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform .15s;
+}
+
+.turn details.think[open] summary::before { transform: rotate(90deg); }
+
+.turn details.think .think-body { margin-top: 8px; line-height: 1.7; }
+
+/* ---------- 5. 联网搜索来源 ---------- */
+.turn details.sources {
+  background: #f7fbf8;
+  border: 1px solid #d9ead7;
+  border-radius: 8px;
+  padding: 6px 12px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: #3f5a44;
+  max-width: 88%;
+}
+
+.turn details.sources summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  color: #4a7a55;
+}
+
+.turn details.sources summary::-webkit-details-marker { display: none; }
+
+.turn details.sources summary::before {
+  content: "\25B8";                     /* ▸ */
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform .15s;
+}
+
+.turn details.sources[open] summary::before { transform: rotate(90deg); }
+
+.turn details.sources ol { margin: 8px 0 0; padding-left: 22px; }
+.turn details.sources li { margin: 4px 0; }
+.turn details.sources a { color: #1a7f37; text-decoration: none; }
+.turn details.sources a:hover { text-decoration: underline; }
+
+/* ---------- 5.45 来源日期 ---------- */
+.src-date {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: #eef5ff;
+  color: #0969da;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 5.5 消息里的附件（可点击打开） ---------- */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  max-width: 88%;
+}
+
+.attach {
+  display: inline-block;
+  padding: 2px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  background: #f6f8fa;
+  font-size: 12px;
+  color: #0969da;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.attach:hover {
+  background: #eef5ff;
+  border-color: #b6d4fe;
+}
+
+/* ---------- 5.2 图表占位提示 ---------- */
+.chart-note {
+  display: inline-block;
+  margin: 8px 0;
+  padding: 6px 12px;
+  border: 1px dashed #c9ced6;
+  border-radius: 8px;
+  background: #fafbfc;
+  color: #57606a;
+  font-size: 13px;
+}
+
+.chart-note span {
+  color: #8b949e;
+  font-size: 12px;
+}
+
+/* ---------- 5.3 导出按钮 ---------- */
+.turn-tools {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  opacity: 0;
+  transition: opacity .15s;
+}
+
+.turn:hover .turn-tools { opacity: 1; }
+
+.turn-tool {
+  padding: 2px 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.turn-tool:hover {
+  background: #eef5ff;
+  border-color: #b6d4fe;
+  color: #0969da;
+}
+
+/* ---------- 5.35 图片保存按钮 ---------- */
+.img-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.img-wrap img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.img-save {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: block;
+  opacity: .55;
+  transition: opacity .15s;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(20, 24, 30, .72);
+  color: #ffffff;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+.img-wrap:hover .img-save { opacity: 1; }
+.img-save:hover { background: rgba(10, 132, 255, .92); opacity: 1; }
+
+/* ---------- 5.4 每条消息的删除按钮 ---------- */
+.turn { position: relative; }
+
+.turn-del {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  display: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #e1e4e8;
+  border-radius: 50%;
+  background: #fff;
+  color: #8b949e;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.turn:hover .turn-del { display: block; }
+.turn-del:hover { background: #ffecec; border-color: #f0b8b8; color: #b42318; }
+
+/* ---------- 5.6 正文里的引用角标 ---------- */
+.cite {
+  font-size: .8em;
+  vertical-align: super;
+  padding: 0 2px;
+  color: #0969da;
+  text-decoration: none;
+}
+
+.cite:hover { text-decoration: underline; }
+
+/* ---------- 6. 状态 ---------- */
+.pending { color: #8b949e; font-style: italic; }
+
+.cursor {
+  color: #0969da;
+  animation: blink 1s steps(2) infinite;
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 7. 回到最新 ---------- */
+#jump-latest {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  display: none;
+  padding: 6px 14px;
+  border: 1px solid #d0d7de;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .95);
+  color: #0969da;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+}
+
+#jump-latest.show { display: block; }
+#jump-latest:hover { background: #f3f8ff; }

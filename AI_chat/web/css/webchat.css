@@ -1,0 +1,552 @@
+/* Web 入口页面框架（消息气泡样式复用 chat.css） */
+
+html {
+  height: 100%;
+  overflow: hidden;      /* html 也要锁住，否则页面会出现第二根滚动条 */
+}
+
+body {
+  position: fixed;       /* 把 body 钉在视口上，彻底杜绝页面级滚动 */
+  inset: 0;
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;            /* chat.css 给桌面端留了 18/22/64 的 padding，这里必须清掉 */
+  box-sizing: border-box;
+  background: #f5f6f8;
+  color: #1f2328;
+  font-family: -apple-system, "PingFang SC", "Segoe UI",
+               "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;   /* 让聊天区自己滚动，而不是整页滚动 */
+}
+
+/* ---------- 布局：左侧会话栏 + 右侧聊天 ---------- */
+.layout {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 250px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;          /* 关键：允许内部列表收缩并滚动 */
+  gap: 8px;
+  padding: 12px 10px;
+  background: #f7f8fa;
+  border-right: 1px solid #e3e6ea;
+}
+
+.new-conv {
+  padding: 9px 12px;
+  border: 1px solid #0a84ff;
+  border-radius: 9px;
+  background: #0a84ff;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.new-conv:hover { background: #0b74e0; }
+
+.conv-search {
+  padding: 7px 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 12px;
+  outline: none;
+}
+
+.conv-search:focus { border-color: #0a84ff; }
+
+.conv-list {
+  flex: 1;
+  min-height: 0;          /* 同上，否则内容会把父级撑高、被 overflow:hidden 裁掉 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+/* 让滚动条始终可见（macOS 默认是悬浮、不滚动就隐藏） */
+.conv-list::-webkit-scrollbar { width: 8px; }
+.conv-list::-webkit-scrollbar-track { background: transparent; }
+.conv-list::-webkit-scrollbar-thumb {
+  background: #c9ced6;
+  border-radius: 4px;
+  border: 2px solid #f7f8fa;
+}
+.conv-list::-webkit-scrollbar-thumb:hover { background: #aeb7c2; }
+
+.conv-item {
+  flex: 0 0 auto;          /* 不允许被压缩，列表才能溢出并滚动 */
+  position: relative;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #1f2328;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-item:hover { background: #e9edf2; }
+.conv-item.active { background: #e8f1ff; color: #0969da; font-weight: 600; }
+
+.conv-item .conv-actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  gap: 2px;
+}
+
+.conv-item:hover .conv-actions { display: flex; }
+
+.conv-item .conv-actions button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .9);
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.conv-item .conv-actions button:hover { background: #ffecec; color: #b42318; }
+
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: #ffffff;
+  border-bottom: 1px solid #e3e6ea;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.badge {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: #e8f1ff;
+  color: #0969da;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.meta {
+  flex: 1;
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #57606a;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input {
+  accent-color: #0a84ff;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.ghost {
+  padding: 5px 12px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ghost:hover {
+  background: #f3f6fa;
+}
+
+.chat-scroll {
+  flex: 1;
+  min-height: 0;      /* flex 子项默认 min-height:auto，会导致整页滚动 */
+  overflow-y: auto;
+  padding: 20px;
+  background: #ffffff;
+  margin: 12px;
+  border: 1px solid #e3e6ea;
+  border-radius: 12px;
+}
+
+.composer {
+  display: flex;
+  gap: 10px;
+  padding: 0 12px 14px;
+}
+
+.composer textarea {
+  flex: 1;
+  min-height: 56px;
+  max-height: 160px;
+  padding: 10px 12px;
+  border: 1px solid #d9dee5;
+  border-radius: 10px;
+  resize: none;
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.composer textarea:focus {
+  border-color: #0a84ff;
+}
+
+.composer .primary {
+  width: 96px;
+  border: none;
+  border-radius: 10px;
+  background: #0a84ff;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer .primary:disabled {
+  background: #b9d4f8;
+  cursor: default;
+}
+
+/* 复用 chat.css 的气泡：给它一个适配网页的容器宽度 */
+.chat-scroll .turn {
+  max-width: 1000px;
+  margin: 0 auto 18px;
+}
+
+.chat-scroll .turn .body {
+  background: #f7f8fa;
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.chat-scroll .turn.user .body {
+  background: #e8f1ff;
+}
+
+.chat-scroll .turn .body:empty {
+  display: none;
+}
+
+.chat-scroll .turn.ai .body {
+  background: #f7f8fa;
+}
+
+.chat-scroll .turn .role {
+  font-size: 12px;
+  color: #8b949e;
+  margin-bottom: 6px;
+}
+
+.cursor-blink::after {
+  content: "▍";
+  color: #0a84ff;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to { visibility: hidden; }
+}
+
+/* ---------- 附件 ---------- */
+.pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 14px 8px;
+}
+
+.pending:empty { display: none; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  background: #f6f8fa;
+  font-size: 12px;
+}
+
+.chip button {
+  border: none;
+  background: transparent;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.chip button:hover { color: #b42318; }
+
+.composer .attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  border: 1px solid #d9dee5;
+  border-radius: 10px;
+  background: #ffffff;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.composer .attach:hover { background: #f3f6fa; }
+
+/* ---------- 导出按钮 ---------- */
+.turn-tools {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  opacity: .55;
+  transition: opacity .15s;
+}
+
+.turn:hover .turn-tools { opacity: 1; }
+
+.turn-tool {
+  padding: 2px 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.turn-tool:hover {
+  background: #eef5ff;
+  border-color: #b6d4fe;
+  color: #0969da;
+}
+
+/* ---------- 停止生成 ---------- */
+.composer .primary.stopping {
+  background: #ff3b30;
+}
+
+.composer .primary.stopping:hover {
+  background: #e0322a;
+}
+
+.stopped-note {
+  margin-top: 6px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+/* ---------- 删除 ---------- */
+.turn {
+  position: relative;
+}
+
+.turn-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #e1e4e8;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #8b949e;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.turn:hover .turn-del { display: block; }
+.turn-del:hover { background: #ffecec; border-color: #f0b8b8; color: #b42318; }
+
+.turn-check {
+  position: absolute;
+  top: 8px;
+  left: -2px;
+  display: none;
+  width: 16px;
+  height: 16px;
+  accent-color: #0a84ff;
+  cursor: pointer;
+}
+
+.chat-scroll.managing .turn-check { display: block; }
+.chat-scroll.managing .turn { padding-left: 22px; }
+.chat-scroll.managing .turn-del { display: none; }
+
+.ghost.danger { color: #b42318; border-color: #f0b8b8; }
+.ghost.danger:hover { background: #ffecec; }
+
+.fmt {
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ---------- 回到最新 ---------- */
+.jump-latest {
+  position: fixed;
+  right: 40px;
+  bottom: 130px;
+  padding: 6px 14px;
+  border: 1px solid #d9dee5;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .95);
+  color: #0969da;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .08);
+  z-index: 20;
+}
+
+.jump-latest:hover { background: #eef5ff; }
+
+/* ---------- 侧边栏收起 ---------- */
+.sidebar {
+  transition: width .18s ease, padding .18s ease;
+  overflow: hidden;
+}
+
+.layout.collapsed .sidebar {
+  width: 0;
+  padding: 12px 0;
+  border-right: none;
+}
+
+.ghost.icon {
+  width: 32px;
+  padding: 4px 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* ---------- 搜索结果 ---------- */
+.conv-hit {
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.conv-hit:hover { background: #eef2f7; }
+
+.conv-hit .hit-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2328;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-hit .hit-snippet {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.conv-hit mark {
+  background: #fff2c2;
+  color: inherit;
+  padding: 0 1px;
+}
+
+.conv-empty {
+  padding: 12px 10px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+/* ---------- 会话管理条 ---------- */
+.conv-bar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mini {
+  padding: 4px 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mini:hover { background: #f3f6fa; }
+.mini:disabled { color: #b6bcc4; cursor: default; }
+.mini.danger { color: #b42318; border-color: #f0b8b8; }
+.mini.danger:hover { background: #ffecec; }
+.mini.danger:disabled { color: #d9a6a1; border-color: #f3d6d3; }
+
+.conv-item.selected { background: #e8f1ff; }
+
+.conv-check {
+  width: 14px;
+  height: 14px;
+  margin-right: 7px;
+  vertical-align: middle;
+  accent-color: #0a84ff;
+  cursor: pointer;
+}
+
+.conv-item.managing { padding-left: 10px; }

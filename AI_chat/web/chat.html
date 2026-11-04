@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Chat</title>
+
+  <!-- 第三方库 -->
+  <link rel="stylesheet" href="vendor/katex.min.css" />
+
+  <!-- 本地样式 -->
+  <link rel="stylesheet" href="css/chat.css" />
+</head>
+<body>
+  <div id="chat"><p class="pending">还没有对话，在下方输入内容开始吧。</p></div>
+
+  <button id="jump-latest" title="回到最新内容">↓ 回到最新</button>
+
+  <!-- 第三方脚本（顺序不能变：marked → katex → auto-render） -->
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/katex.min.js"></script>
+  <script src="vendor/auto-render.min.js"></script>
+
+  <!-- 本地脚本 -->
+  <script src="js/chat.js"></script>
+</body>
+</html>

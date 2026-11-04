@@ -1,0 +1,312 @@
+/* =========================================================================
+   全局主题（QSS）
+   @RES@ 在加载时会被替换成 resources 目录的绝对路径（给 image: url() 用）
+   ========================================================================= */
+
+/* ---------- 基础 ---------- */
+QWidget {
+    color: #1f2328;
+    font-size: 13px;
+    font-family: @UIFONT@;
+}
+
+QMainWindow, QDialog {
+    background: #f5f6f8;
+}
+
+QToolTip {
+    background: #1f2328;
+    color: #ffffff;
+    border: none;
+    padding: 4px 8px;
+}
+
+/* ---------- 聊天区（WebEngine） ---------- */
+QWebEngineView {
+    border: 1px solid #e3e6ea;
+    border-radius: 10px;
+    background: #ffffff;
+}
+
+/* ---------- 标签页 ---------- */
+QTabWidget::pane {
+    border: none;
+    background: transparent;
+}
+
+QTabBar {
+    qproperty-drawBase: 0;
+    background: transparent;
+}
+
+QTabBar::tab {
+    background: transparent;
+    color: #5b6472;
+    padding: 7px 18px;
+    margin: 0 2px;
+    border-radius: 9px;
+    border: none;
+}
+
+QTabBar::tab:hover {
+    background: #e9edf2;
+    color: #1f2328;
+}
+
+QTabBar::tab:selected {
+    background: #0a84ff;
+    color: #ffffff;
+}
+
+/* ---------- 按钮 ---------- */
+QPushButton {
+    background: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d9dee5;
+    border-radius: 8px;
+    padding: 6px 14px;
+    min-height: 18px;
+}
+
+QPushButton:hover {
+    background: #f3f6fa;
+    border-color: #c7d0da;
+}
+
+QPushButton:pressed {
+    background: #e8eef6;
+}
+
+QPushButton:disabled {
+    background: #f2f3f5;
+    color: #a8b0ba;
+    border-color: #e6e8ec;
+}
+
+/* 主操作：发送 */
+QPushButton#send_button {
+    background: #0a84ff;
+    color: #ffffff;
+    border: 1px solid #0a84ff;
+    font-weight: 600;
+}
+
+QPushButton#send_button:hover {
+    background: #0b74e0;
+    border-color: #0b74e0;
+}
+
+QPushButton#send_button:pressed {
+    background: #0a63c2;
+}
+
+/* 对话框里的主按钮：添加 */
+QPushButton#ok_btn {
+    background: #0a84ff;
+    color: #ffffff;
+    border: 1px solid #0a84ff;
+    font-weight: 600;
+}
+
+QPushButton#ok_btn:hover {
+    background: #0b74e0;
+    border-color: #0b74e0;
+}
+
+/* 表格里的小按钮（删除） */
+QTableWidget QPushButton {
+    padding: 2px 10px;
+    border-radius: 6px;
+    min-height: 16px;
+}
+
+/* ---------- 输入框 ---------- */
+QLineEdit, QPlainTextEdit, QTextEdit {
+    background: #ffffff;
+    border: 1px solid #d9dee5;
+    border-radius: 8px;
+    padding: 6px 10px;
+    selection-background-color: #cfe4ff;
+    selection-color: #1f2328;
+}
+
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
+    border-color: #0a84ff;
+}
+
+QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
+    background: #f2f3f5;
+    color: #9aa3ad;
+}
+
+/* ---------- 下拉框 ---------- */
+QComboBox {
+    background: #ffffff;
+    border: 1px solid #d9dee5;
+    border-radius: 8px;
+    padding: 5px 30px 5px 10px;
+    min-height: 20px;
+}
+
+QComboBox:hover { border-color: #c7d0da; }
+QComboBox:focus { border-color: #0a84ff; }
+
+QComboBox::drop-down {
+    border: none;
+    width: 26px;
+}
+
+QComboBox::down-arrow {
+    image: url("@RES@/chevron-down.svg");
+    width: 10px;
+    height: 10px;
+}
+
+QComboBox QAbstractItemView {
+    background: #ffffff;
+    border: 1px solid #d9dee5;
+    border-radius: 8px;
+    padding: 4px;
+    outline: 0;
+    selection-background-color: #e8f1ff;
+    selection-color: #1f2328;
+}
+
+/* ---------- 复选框 ---------- */
+QCheckBox {
+    spacing: 8px;
+    color: #1f2328;
+    background: transparent;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #c9ced6;
+    border-radius: 5px;
+    background: #ffffff;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #8fbff7;
+}
+
+QCheckBox::indicator:checked {
+    background: #0a84ff;
+    border-color: #0a84ff;
+    image: url("@RES@/check.svg");
+}
+
+QCheckBox::indicator:disabled {
+    background: #f2f3f5;
+    border-color: #e0e3e8;
+}
+
+/* ---------- 表格 ---------- */
+QTableWidget {
+    background: #ffffff;
+    border: 1px solid #e3e6ea;
+    border-radius: 10px;
+    gridline-color: transparent;
+    alternate-background-color: #fafbfc;
+    selection-background-color: #e8f1ff;
+    selection-color: #1f2328;
+}
+
+QHeaderView::section {
+    background: #f7f8fa;
+    color: #5b6472;
+    border: none;
+    border-bottom: 1px solid #e3e6ea;
+    padding: 7px 10px;
+    font-weight: 600;
+}
+
+QTableCornerButton::section {
+    background: #f7f8fa;
+    border: none;
+}
+
+QTableView::indicator, QListView::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #c9ced6;
+    border-radius: 5px;
+    background: #ffffff;
+}
+
+QTableView::indicator:checked, QListView::indicator:checked {
+    background: #0a84ff;
+    border-color: #0a84ff;
+    image: url("@RES@/check.svg");
+}
+
+/* ---------- 滚动条 ---------- */
+QScrollBar:vertical {
+    background: transparent;
+    width: 12px;
+    margin: 3px;
+}
+
+QScrollBar::handle:vertical {
+    background: #c3cad4;
+    border-radius: 5px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover { background: #b3bcc7; }
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    height: 0;
+    background: transparent;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #c3cad4;
+    border-radius: 5px;
+    min-width: 30px;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    width: 0;
+    background: transparent;
+}
+
+/* ---------- 状态栏 ---------- */
+QStatusBar {
+    background: #ffffff;
+    border-top: 1px solid #e3e6ea;
+    color: #6b7280;
+}
+
+QStatusBar::item { border: none; }
+
+/* ---------- 列表 ---------- */
+QListWidget {
+    background: #ffffff;
+    border: 1px solid #e3e6ea;
+    border-radius: 10px;
+    outline: 0;
+}
+
+QListWidget::item {
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+QListWidget::item:hover {
+    background: #f3f6fa;
+}
+
+QListWidget::item:selected {
+    background: #e8f1ff;
+    color: #1f2328;
+}
