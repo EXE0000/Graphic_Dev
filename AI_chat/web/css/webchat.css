@@ -579,3 +579,18 @@ body {
 
 #send:disabled:hover,
 #send.blocked:hover { background: #d7dbe2; }
+
+/* ---------- 正文引用链接 ---------- */
+.body a.cite {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: #eef5ff;
+  color: #0969da;
+  font-size: .92em;
+  text-decoration: none;
+}
+
+.body a.cite:hover {
+  background: #d8e8ff;
+  text-decoration: underline;
+}

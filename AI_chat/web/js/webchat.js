@@ -412,8 +412,58 @@
       .catch(function () { alert("保存失败：图片可能已被删除"); });
   }
 
+  // 把正文里的 [1][2] 变成可点击的来源链接（跳过代码块和已有链接）
+  function linkCitations(root, sources) {
+    if (!root || !sources || !sources.length) return;
+
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        if (!node.nodeValue || node.nodeValue.indexOf("[") < 0) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        var parent = node.parentNode;
+        while (parent && parent !== root) {
+          if (parent.tagName === "A" || parent.tagName === "CODE"
+              || parent.tagName === "PRE") {
+            return NodeFilter.FILTER_REJECT;
+          }
+          parent = parent.parentNode;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    var nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+
+    nodes.forEach(function (node) {
+      var html = node.nodeValue.replace(/\[(\d{1,2})\]/g, function (match, num) {
+        var index = parseInt(num, 10) - 1;
+        var source = sources[index];
+        if (!source || !source.url) return match;
+        var title = (source.title || source.url || "").replace(/"/g, "&quot;");
+        return '<a class="cite" href="' + source.url + '" target="_blank"'
+             + ' rel="noopener noreferrer" title="' + title + '">'
+             + match + "</a>";
+      });
+      if (html === node.nodeValue) return;
+
+      var span = document.createElement("span");
+      span.innerHTML = html;
+      node.parentNode.replaceChild(span, node);
+    });
+  }
+
   function renderMarkdown(text) {
     return window.marked ? marked.parse(text) : String(text).replace(/</g, "&lt;");
+  }
+
+  function paintBody(node, markdown, sources) {
+    if (!node) return;
+    node.innerHTML = renderMarkdown(markdown || "");
+    typeset(node);
+    decorateImages(node);
+    linkCitations(node, sources);
   }
 
   function typeset(node) {
@@ -457,9 +507,9 @@
     return { turn: turn, body: body };
   }
 
-  function addThink(turn) {
+  function addThink(turn, open) {
     var details = el("details", "think");
-    details.open = true;
+    details.open = (open !== false);      // 默认展开；恢复历史时传 false 折叠起来
     details.appendChild(el("summary", null, "思考过程"));
     var body = el("div", "think-body");
     details.appendChild(body);
@@ -668,13 +718,12 @@
   function renderHistoryTurn(turn) {
     var node = addTurn(turn.role, turn.index);
     if (turn.reasoning) {
-      var think = addThink(node.turn);
+      // 刷新恢复历史时默认折叠；只有正在生成的那条保持展开
+      var think = addThink(node.turn, !!turn.streaming);
       think.body.innerHTML = renderMarkdown(turn.reasoning);
       typeset(think.body);
     }
-    node.body.innerHTML = renderMarkdown(turn.content || "");
-    typeset(node.body);
-    decorateImages(node.body);
+    paintBody(node.body, turn.content || "", turn.sources || []);
     if (turn.streaming) {
       node.turn.classList.add("streaming");
       var badge = el("div", "streaming-badge", "生成中…");
@@ -776,9 +825,7 @@
         if (node) {
           var body = node.querySelector(".body");
           if (body && last.content) {
-            body.innerHTML = renderMarkdown(last.content);
-            typeset(body);
-            decorateImages(body);
+            paintBody(body, last.content, last.sources || []);
           }
           var thinkBody = node.querySelector(".think-body");
           if (thinkBody && last.reasoning) {
@@ -906,8 +953,7 @@
     updateSendState();
 
     var user = addTurn("user");
-    user.body.innerHTML = renderMarkdown(text);
-    typeset(user.body);
+    paintBody(user.body, text, []);
 
     var ai = addTurn("ai");
     var think = addThink(ai.turn);
@@ -927,9 +973,7 @@
       }
       if (state.dirty) {
         state.dirty = false;
-        ai.body.innerHTML = renderMarkdown(state.text);
-        typeset(ai.body);
-        decorateImages(ai.body);
+        paintBody(ai.body, state.text, state.sources);
         if (stick) chat.scrollTop = chat.scrollHeight;
       }
     }, 120);
@@ -971,9 +1015,7 @@
     }
 
     clearInterval(timer);
-    ai.body.innerHTML = renderMarkdown(state.text || "（没有返回内容）");
-    typeset(ai.body);
-    decorateImages(ai.body);
+    paintBody(ai.body, state.text || "（没有返回内容）", state.sources);
     ai.body.classList.remove("cursor-blink");
 
     var sources = renderSources(state);

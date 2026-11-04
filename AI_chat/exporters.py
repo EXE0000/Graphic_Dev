@@ -80,10 +80,11 @@ def linkify_citations(markdown: str, sources) -> str:
     if not sources:
         return markdown
 
-    parts = re.split(r"(```.*?```)", markdown, flags=re.S)
+    # 同时跳过围栏代码块和行内代码，避免把 `a[1]` 这种代码改坏
+    parts = re.split(r"(```.*?```|`[^`\n]*`)", markdown, flags=re.S)
     out = []
     for part in parts:
-        if part.startswith("```"):
+        if part.startswith("```") or (part.startswith("`") and len(part) > 2):
             out.append(part)
             continue
 
@@ -983,24 +984,43 @@ def _col_name(index: int) -> str:
     return name
 
 
-def _sheet_xml(rows) -> str:
+URL_RE = re.compile(r"https?://[^\s)）\]】,，。；;]+")
+
+
+def _sheet_xml(rows):
+    """返回 (工作表 XML, [(单元格引用, 超链接)])。"""
     out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+           '<cols><col min="1" max="12" width="22" customWidth="1"/></cols>',
            '<sheetData>']
+    links = []
+
     for r, row in enumerate(rows, start=1):
         out.append(f'<row r="{r}">')
         for c, cell in enumerate(row):
             style = ' s="1"' if r == 1 else ""
-            text = escape(strip_markdown(str(cell)))
+            raw = str(cell)
+            text = escape(strip_markdown(raw))
+            ref = f"{_col_name(c)}{r}"
+
+            found = URL_RE.search(raw)
+            if found:
+                links.append((ref, found.group(0).rstrip(".,;")))
+
             out.append(
-                '<c r="%s%d" t="inlineStr"%s><is><t xml:space="preserve">%s</t></is></c>'
-                % (_col_name(c), r, style, text)
+                '<c r="%s" t="inlineStr"%s><is><t xml:space="preserve">%s</t></is></c>'
+                % (ref, style, text)
             )
         out.append("</row>")
+
     out.append("</sheetData>")
-    out.append('<cols><col min="1" max="12" width="22" customWidth="1"/></cols>')
+    if links:
+        out.append("<hyperlinks>")
+        for index, (ref, _url) in enumerate(links, start=1):
+            out.append(f'<hyperlink ref="{ref}" r:id="rIdL{index}"/>')
+        out.append("</hyperlinks>")
     out.append("</worksheet>")
-    return "".join(out)
+    return "".join(out), links
 
 
 def _workbook_xml(names) -> str:
@@ -1086,7 +1106,19 @@ def export_xlsx(text: str, path, sources=None) -> None:
         zf.writestr("xl/_rels/workbook.xml.rels", _workbook_rels(names))
         zf.writestr("xl/styles.xml", _fill_fonts(_XLSX_STYLES))
         for i, rows in enumerate(tables, start=1):
-            zf.writestr(f"xl/worksheets/sheet{i}.xml", _sheet_xml(rows))
+            sheet_xml, links = _sheet_xml(rows)
+            zf.writestr(f"xl/worksheets/sheet{i}.xml", sheet_xml)
+            if links:
+                rels = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+                        '<Relationships xmlns="http://schemas.openxmlformats.org/'
+                        'package/2006/relationships">']
+                for index, (_ref, url) in enumerate(links, start=1):
+                    rels.append(
+                        f'<Relationship Id="rIdL{index}" Type="http://schemas.openxmlformats.org/'
+                        f'officeDocument/2006/relationships/hyperlink" Target="{escape(url)}" '
+                        'TargetMode="External"/>')
+                rels.append("</Relationships>")
+                zf.writestr(f"xl/worksheets/_rels/sheet{i}.xml.rels", "".join(rels))
 
 
 def suggest_filename(content: str, fmt: str) -> str:
@@ -1127,6 +1159,8 @@ def conversation_markdown(turns, title="对话导出") -> str:
 
         sources = message.get("sources") or []
         if sources:
+            # 正文里的 [1][2] 变成可点击链接（编号对应这条消息自己的来源）
+            lines[-1] = linkify_citations(lines[-1], sources)
             lines.append("")
             lines.append("**参考来源：**")
             for index, source in enumerate(sources, start=1):
