@@ -196,7 +196,8 @@ def _save_cache(force=False):
     if path is None:
         return
     try:
-        tmp = path.with_suffix(".tmp")
+        # 临时文件名带线程标识：多个线程同时落盘时不会写到同一个 .tmp 上
+        tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
     except OSError:

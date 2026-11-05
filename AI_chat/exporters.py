@@ -988,7 +988,8 @@ URL_RE = re.compile(r"https?://[^\s)）\]】,，。；;]+")
 def _sheet_xml(rows):
     """返回 (工作表 XML, [(单元格引用, 超链接)])。"""
     out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-           '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+           '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+           ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
            '<cols><col min="1" max="12" width="22" customWidth="1"/></cols>',
            '<sheetData>']
     links = []

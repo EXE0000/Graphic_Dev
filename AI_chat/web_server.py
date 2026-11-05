@@ -83,6 +83,22 @@ class WebChatServer:
         for conv in self.conversations.values():
             for message in conv.get("messages") or []:
                 message.pop("streaming", None)
+                # 图片附件不存 base64，只存文件路径；加载时从副本重建 data URL
+                files = message.get("files") or []
+                if files and message.get("role") == "user":
+                    images = []
+                    for f in files:
+                        path = f.get("path")
+                        if f.get("kind") != "image" or not path:
+                            continue
+                        try:
+                            if pathlib.Path(path).is_file():
+                                images.append(
+                                    attach_mod.image_to_data_url(pathlib.Path(path)))
+                        except Exception:        # 图片丢了不影响文字上下文
+                            continue
+                    if images:
+                        message["images"] = images
 
         if self.conversations:
             return
@@ -194,6 +210,7 @@ class WebChatServer:
                     "sources": message.get("sources") or [],
                     "streaming": bool(message.get("streaming")),
                     "texts": message.get("texts") or [],
+                    "files": message.get("files") or [],
                     "images": [],
                 })
             payload["conversations"][cid] = {
@@ -334,12 +351,13 @@ class WebChatServer:
         if parsed.path == "/api/conversations/new":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
             current = query.get("conv", [""])[0]
-            existing = self.conversations.get(current)
-            # 当前会话本来就是空的，就别再造一个新的（否则会堆一屏"新对话"）
-            if existing is not None and not existing.get("messages"):
-                conv = existing
-            else:
-                conv = self.create_conversation()
+            with self._lock:
+                existing = self.conversations.get(current)
+                # 当前会话本来就是空的，就别再造一个新的（否则会堆一屏"新对话"）
+                if existing is not None and not existing.get("messages"):
+                    conv = existing
+                else:
+                    conv = self.create_conversation()
             return self._send_json(handler, {"id": conv["id"],
                                              "title": conv["title"],
                                              "items": self.conversation_list()})
@@ -348,13 +366,14 @@ class WebChatServer:
         if parsed.path == "/api/conversations/delete_batch":
             return self.handle_delete_conversations(handler)
         if parsed.path == "/api/conversations/delete_empty":
-            removed = [cid for cid, conv in self.conversations.items()
-                       if not (conv.get("messages") or [])]
-            for cid in removed:
-                self.conversations.pop(cid, None)
-            if not self.conversations:
-                self.create_conversation()
-            self._save_conversations()
+            with self._lock:
+                removed = [cid for cid, conv in self.conversations.items()
+                           if not (conv.get("messages") or [])]
+                for cid in removed:
+                    self.conversations.pop(cid, None)
+                if not self.conversations:
+                    self.create_conversation()
+                self._save_conversations()
             return self._send_json(handler, {"items": self.conversation_list(),
                                              "removed": len(removed),
                                              "active": self.get_conversation("")["id"]})
@@ -433,9 +452,12 @@ class WebChatServer:
                  for a in pending if a["kind"] == "text"]
         images = [a.get("data_url") for a in pending
                   if a["kind"] == "image"]
+        files = [{"name": a.get("name"), "path": a.get("path", ""),
+                  "kind": a.get("kind")} for a in pending]
         with self._lock:
             conv["messages"].append({"role": "user", "content": text,
-                                     "texts": texts, "images": images})
+                                     "texts": texts, "images": images,
+                                     "files": files})
             conv["updated"] = time.time()
             if not conv.get("title") or conv["title"] == "新对话":
                 conv["title"] = self._auto_title(conv["messages"])
@@ -449,7 +471,7 @@ class WebChatServer:
         with self._lock:
             conv["messages"].append(assistant)
             self._save_conversations()
-        self._active += 1
+            self._active += 1
 
         final = {"content": "", "reasoning": "", "sources": []}
         client_gone = False
@@ -522,7 +544,8 @@ class WebChatServer:
                 conv["messages"] = [m for m in conv["messages"] if m is not assistant]
             self._save_conversations()
 
-        self._active = max(0, self._active - 1)
+        with self._lock:
+            self._active = max(0, self._active - 1)
         emit("done", {"ok": True})
 
     def _build_messages(self, conv=None):
@@ -582,11 +605,18 @@ class WebChatServer:
                 "reasoning": message.get("reasoning") or "",
                 "sources": message.get("sources") or [],
                 "streaming": bool(message.get("streaming")),
-                "attachments": [
-                    {"name": t.get("name")} for t in (message.get("texts") or [])
-                ],
+                "attachments": self._public_attachments(message),
             })
         return turns
+
+    @staticmethod
+    def _public_attachments(message):
+        """历史消息的附件摘要：优先用 files（含图片），回退到 texts。"""
+        files = message.get("files") or []
+        if files:
+            return [{"name": f.get("name"), "kind": f.get("kind")} for f in files]
+        return [{"name": t.get("name"), "kind": "text"}
+                for t in (message.get("texts") or [])]
 
     def handle_setting(self, handler):
         try:

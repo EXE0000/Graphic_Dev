@@ -222,6 +222,11 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout_6.addWidget(self.search_key_text)
 
+        self.search_key_test = QPushButton(self.config_scroll_contents)
+        self.search_key_test.setObjectName(u"search_key_test")
+
+        self.horizontalLayout_6.addWidget(self.search_key_test)
+
 
         self.verticalLayout_5.addLayout(self.horizontalLayout_6)
 
@@ -432,6 +437,7 @@ class Ui_MainWindow(object):
         self.prompt_text.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u7559\u7a7a\u4f7f\u7528\u9ed8\u8ba4\u4eba\u8bbe\uff1b\u516c\u5f0f / \u56fe\u8868 / \u914d\u56fe / \u5f15\u7528\u7b49\u5185\u7f6e\u80fd\u529b\u8bf4\u660e\u4f1a\u81ea\u52a8\u9644\u52a0", None))
         self.search_provider_label.setText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22\u63d0\u4f9b\u5546:", None))
         self.search_key_label.setText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22 KEY:", None))
+        self.search_key_test.setText(QCoreApplication.translate("MainWindow", u"\u68c0\u6d4b", None))
         self.image_model_label.setText(QCoreApplication.translate("MainWindow", u"\u56fe\u7247\u6a21\u578b:", None))
         self.image_model_text.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u7559\u7a7a\u5219\u4e0d\u542f\u7528\u6587\u751f\u56fe\uff08\u5982 gpt-image-1 / wanx2.1-t2i-turbo / flux.1-schnell\uff09", None))
 #if QT_CONFIG(tooltip)

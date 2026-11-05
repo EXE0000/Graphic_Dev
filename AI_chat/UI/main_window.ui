@@ -354,6 +354,13 @@
                 </property>
                </widget>
               </item>
+              <item>
+               <widget class="QPushButton" name="search_key_test">
+                <property name="text">
+                 <string>检测</string>
+                </property>
+               </widget>
+              </item>
              </layout>
             </item>
             <item>

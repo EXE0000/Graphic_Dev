@@ -236,6 +236,8 @@ MAX_SEARCH_ROUNDS = 2      # 最多几轮检索（每轮可由模型并行发起
 SEARCH_TIME_BUDGET = 25    # 单次提问花在检索上的总时间上限（秒）
 PER_CALL_MAX = 8           # 单次搜索最多几条
 PREFETCH_RESULTS = 6       # 降级到"直接检索"时用几条
+SEARCH_TEST_TIMEOUT = 10   # 「检测」搜索 API 的单次超时（秒）
+SEARCH_TEST_TTL = 120      # 勾选时的检测结论缓存时长（秒），避免反复勾选反复联网
 
 WEB_SEARCH_TOOL = {
     "type": "function",
@@ -329,6 +331,10 @@ class ReasoningProbeWorker(QThread):
         self.key = key
         self.model = model
         self.cap_key = cap_key
+        self._stopped = False
+
+    def cancel(self):
+        self._stopped = True
 
     # ---------- 1. 原生能力 ----------
     def _native_capabilities(self):
@@ -414,6 +420,8 @@ class ReasoningProbeWorker(QThread):
 
     def run(self):
         caps = self._native_capabilities()
+        if self._stopped:
+            return
         if caps is not None:
             has = any("reason" in str(c).lower() for c in caps)
             self.done.emit(self.cap_key, "yes" if has else "no")
@@ -424,8 +432,14 @@ class ReasoningProbeWorker(QThread):
         network_error = False
 
         for off_params, high_params in self._param_sets():
+            if self._stopped:
+                return
             low = self._ask(off_params)
+            if self._stopped:
+                return
             high = self._ask(high_params)
+            if self._stopped:
+                return
 
             if low is None and high is None:
                 network_error = True
@@ -441,6 +455,8 @@ class ReasoningProbeWorker(QThread):
                 self.done.emit(self.cap_key, "yes")
                 return
 
+        if self._stopped:
+            return
         if accepted and known:
             self.done.emit(self.cap_key, "yes")
         elif accepted:
@@ -698,6 +714,7 @@ class ChatWorker(QThread):
             try:
                 results = search_web(self.search_key, query, max_results=want,
                                      provider=self.search_provider)
+                fetched_main = len(results)   # 主搜索实际取到的条数（extra 另行扣减）
 
                 # 命中机构关键词时，追加 site: 限定检索，尽量拿一手原文
                 domains = authority_domains(query)
@@ -733,7 +750,7 @@ class ChatWorker(QThread):
                                  "content": f"搜索失败：{e}"})
                 continue
 
-            self._budget -= len(results)
+            self._budget -= fetched_main
             self._all_sources.extend(to_sources(results))
             self._sources_count = len(self._all_sources)
             self.sources.emit(self._all_sources)      # 边搜边显示
@@ -764,6 +781,11 @@ class ChatWorker(QThread):
                              "content": f"图片生成失败：{text}"})
             self.search_note.emit(f"图片生成失败：{text}")
             return
+        except Exception as e:
+            messages.append({"role": "tool", "tool_call_id": tool_call_id,
+                             "content": f"图片生成失败：{e}"})
+            self.search_note.emit(f"图片生成失败：{e}")
+            return
 
         folder = app_paths.sub_dir("images")
         if folder is None:
@@ -771,7 +793,13 @@ class ChatWorker(QThread):
                              "content": "图片生成失败：没有可写的目录"})
             return
 
-        path = image_gen.save_image(data, folder)
+        try:
+            path = image_gen.save_image(data, folder)
+        except Exception as e:
+            messages.append({"role": "tool", "tool_call_id": tool_call_id,
+                             "content": f"图片保存失败：{e}"})
+            self.search_note.emit(f"图片保存失败：{e}")
+            return
         snippet = "![生成的图片]({})".format(file_url(path))
         self.generated_images.append(snippet)
         self.image_generated.emit(snippet)
@@ -946,6 +974,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._selected_by_url = {}
         self._reasoning_caps = {}
         self._current_url = ""
+        self._search_test_cache = {}      # (provider, key) -> (ts, ok, msg)
 
         self._init_ui()
         self._gui_timer = QTimer(self)
@@ -1123,7 +1152,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 if worker.isRunning():
                     if hasattr(worker, "cancel"):
                         worker.cancel()
-                    worker.wait(3000)
+                    if not worker.wait(3000):
+                        worker.terminate()      # 仍不退出就强制结束，避免销毁运行中的线程导致崩溃
+                        worker.wait(1000)
             except RuntimeError:
                 pass
 
@@ -1868,11 +1899,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             reason = "请先在客户端选择模型"
         else:
             reason = ""
+        search_available = bool(self.search_key_text.text().strip())
         return {
             "ready": ready,
             "reason": reason,
             "model": model,
-            "search": self.search_check.isChecked(),
+            "search": self.search_check.isChecked() and search_available,
+            "search_available": search_available,
             "image": bool(self.image_config()),
             "thinking": self.reasoning_check.isChecked(),
             "reasoning_supported": self._reasoning_state()[0],
@@ -1969,9 +2002,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.clear_button.clicked.connect(self.on_clear)
         self.add_models_button.clicked.connect(self.add_model)
         self.api_key_test.clicked.connect(self.on_test_api)
+        self.search_key_test.clicked.connect(self.on_test_search)
         self.api_url_text.editingFinished.connect(self._on_api_url_changed)
         self.clear_models_button.clicked.connect(self.clear_all_models)
-        self.search_check.toggled.connect(self._on_search_toggled)
+        # 用 clicked（仅用户点击触发）而非 toggled：程序里 setChecked 恢复配置时
+        # 不应联网检测，否则启动/同步设置会被一次搜索请求卡住。
+        self.search_check.clicked.connect(self._on_search_toggled)
         self.attach_button.clicked.connect(self.on_attach)
         self.image_models_button.clicked.connect(self.pick_image_model)
         self.web_open_button.clicked.connect(self.open_web_ui)
@@ -1979,11 +2015,74 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.capability_prompt_check.toggled.connect(
             self._on_capability_toggled)
 
+    def _search_test(self, force=False):
+        """实测当前搜索服务是否可用，返回 (ok, 说明)。
+
+        结论按 (provider, key) 短期缓存：勾选框反复点不会每次都打网络。
+        """
+        provider = self.search_provider_combo.currentData() or DEFAULT_PROVIDER
+        key = self.search_key_text.text().strip()
+        if not key:
+            return False, f"还没有填写 {provider_label(provider)} 的搜索 KEY"
+
+        cache_key = (provider, key)
+        now = time.time()
+        if not force:
+            hit = self._search_test_cache.get(cache_key)
+            if hit and now - hit[0] < SEARCH_TEST_TTL:
+                return hit[1], hit[2]
+
+        ok, msg = self._search_probe(provider, key)
+        self._search_test_cache[cache_key] = (now, ok, msg)
+        return ok, msg
+
+    @staticmethod
+    def _search_probe(provider, key):
+        """对搜索服务发一次最小请求（不走 search_web 的结果缓存），返回 (ok, 说明)。
+
+        不用 search_web 是因为它的缓存键不含 api_key：换了 key 仍会命中旧 key
+        的成功缓存，检测就会失真。
+        """
+        cfg = PROVIDERS.get(provider)
+        if cfg is None:
+            return False, f"未知的搜索服务：{provider}"
+        label = cfg["label"]
+        kwargs = {"headers": cfg["headers"](key), "timeout": SEARCH_TEST_TIMEOUT}
+        if cfg["method"] == "GET":
+            kwargs["params"] = cfg["params"](key, "连通性测试", 1, None)
+        else:
+            kwargs["json"] = cfg["json"](key, "连通性测试", 1, None)
+        try:
+            resp = requests.request(cfg["method"], cfg["endpoint"], **kwargs)
+        except requests.RequestException as e:
+            return False, f"{label} 请求失败：{e}"
+        if resp.status_code != 200:
+            return False, f"{label} HTTP {resp.status_code}：{resp.text[:200]}"
+        return True, f"{label} 连接正常"
+
+    def on_test_search(self):
+        """「检测」按钮：强制实测一次搜索 API 并弹窗反馈。"""
+        ok, msg = self._search_test(force=True)
+        if ok:
+            QMessageBox.information(self, "成功", msg)
+        else:
+            QMessageBox.critical(self, "搜索 API 检测失败", msg)
+
     def _on_search_toggled(self, checked):
-        """勾选联网搜索但没配 KEY 时，立刻提示，不等发送时再拦。"""
-        if checked and not self.search_key_text.text().strip():
-            self.statusbar.showMessage(
-                "已勾选「联网搜索」，但还没有配置搜索 API Key", 8000)
+        """勾选联网搜索时先实测搜索 API；不可用就直接取消勾选，避免带着坏配置去聊天。"""
+        if not checked:
+            return
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            ok, msg = self._search_test()
+        finally:
+            self.unsetCursor()
+        if ok:
+            self.statusbar.showMessage(msg, 5000)
+            return
+        self.search_check.setChecked(False)      # 不可用：禁止勾选
+        QMessageBox.warning(self, "无法启用联网搜索",
+                            f"搜索 API 检测未通过，已取消勾选「联网搜索」。\n\n{msg}")
 
     # ---------- 附件 ----------
     def on_attach(self):
@@ -2156,9 +2255,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                                  search_provider=search_provider,
                                  reasoning_level=self.reasoning_level(),
                                  image_config=self.image_config())
-        self.worker.search_note.connect(lambda msg: self.statusbar.showMessage(msg))
-        self.worker.reset_stream.connect(
-            lambda: self.textBrowser.page().runJavaScript("resetStream();"))
+        self.worker.search_note.connect(self._on_search_note)
+        self.worker.reset_stream.connect(self._on_reset_stream)
         self.worker.sources.connect(self._on_sources)
         self.worker.image_generated.connect(self._on_image_generated)
         self.worker.chunk.connect(self._on_stream_body)
@@ -2180,6 +2278,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def _on_stream_think(self, text):
         self._push_stream("think", text)
+
+    def _on_search_note(self, msg):
+        self.statusbar.showMessage(msg)
+
+    def _on_reset_stream(self):
+        self.textBrowser.page().runJavaScript("resetStream();")
 
     def _on_image_generated(self, snippet):
         """图片生成好就立刻塞进当前气泡。"""

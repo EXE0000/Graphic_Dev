@@ -41,6 +41,7 @@
   var streamPoll = null;      // 轮询"仍在生成"的会话
   var remoteStreaming = false; // 服务端仍在生成（刷新后也要显示「停止」）
   var serverBusy = false;      // 任意会话正在生成（别的会话里要禁用发送）
+  var modelReady = false;      // 客户端已选模型（否则禁止发送）
   var busyTimer = null;
   var exportAllBtn = document.getElementById("export-all");
   var exportFmt = document.getElementById("export-fmt");
@@ -293,6 +294,12 @@
     });
   }
 
+  // 只放行 http(s)：来源 URL 属于不可信内容，javascript:/data: 会变成可点击的 XSS 入口。
+  function safeUrl(url) {
+    var u = String(url || "").trim();
+    return /^https?:\/\//i.test(u) ? u : "#";
+  }
+
   function highlight(text, keyword) {
     var safe = escapeHtml(text);
     if (!keyword) return safe;
@@ -455,16 +462,20 @@
     while (walker.nextNode()) nodes.push(walker.currentNode);
 
     nodes.forEach(function (node) {
-      var html = node.nodeValue.replace(/\[(\d{1,2})\]/g, function (match, num) {
+      // 先整体转义文本节点：否则原文里被转义过的 <img onerror=…> 会随 innerHTML 复活
+      var safe = escapeHtml(node.nodeValue);
+      var html = safe.replace(/\[(\d{1,2})\]/g, function (match, num) {
         var index = parseInt(num, 10) - 1;
         var source = sources[index];
         if (!source || !source.url) return match;
-        var title = (source.title || source.url || "").replace(/"/g, "&quot;");
-        return '<a class="cite" href="' + source.url + '" target="_blank"'
+        var url = safeUrl(source.url);
+        if (url === "#") return match;
+        var title = escapeHtml(source.title || source.url || "");
+        return '<a class="cite" href="' + escapeHtml(url) + '" target="_blank"'
              + ' rel="noopener noreferrer" title="' + title + '">'
              + match + "</a>";
       });
-      if (html === node.nodeValue) return;
+      if (html === safe) return;
 
       var span = document.createElement("span");
       span.innerHTML = html;
@@ -593,7 +604,12 @@
       }
       meta.textContent = bits.join(" · ");
       if (!cfg.ready) meta.textContent = "配置不完整：" + (cfg.reason || "");
-      toggleSearch.checked = !!cfg.search;
+      modelReady = !!cfg.model;
+      var searchAvailable = cfg.search_available !== false;
+      toggleSearch.checked = !!cfg.search && searchAvailable;
+      toggleSearch.disabled = !searchAvailable;
+      toggleSearch.title = searchAvailable ? "" : "客户端未配置搜索 KEY，无法启用联网搜索";
+      updateSendState();
       if (cfg.reasoning !== undefined) {
         var index = REASONING_LEVELS.indexOf(cfg.reasoning);
         if (index < 0) index = 2;
@@ -646,6 +662,17 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
+  }
+
+  // 把附件以只读 chip 形式挂到某个气泡下方（历史恢复 / 刚发送都用它）
+  function appendAttachments(turnNode, items) {
+    if (!turnNode || !items || !items.length) return;
+    var box = el("div", "attachments");
+    items.forEach(function (a) {
+      box.appendChild(el("span", "chip",
+        (a.kind === "image" ? "🖼 " : "📄 ") + (a.name || "")));
+    });
+    turnNode.appendChild(box);
   }
 
   function uploadOne(file) {
@@ -824,6 +851,7 @@
       typeset(think.body);
     }
     paintBody(node.body, turn.content || "", turn.sources || []);
+    appendAttachments(node.turn, turn.attachments);
     if (turn.streaming) {
       node.turn.classList.add("streaming");
       var badge = el("div", "streaming-badge", "生成中…");
@@ -869,6 +897,13 @@
       sendBtn.classList.add("blocked");
       sendBtn.disabled = true;
       sendBtn.title = "另一个对话正在生成，完成后再发送";
+      return;
+    }
+    if (!modelReady) {                // 客户端未选模型 → 禁止发送
+      sendBtn.textContent = "发送";
+      sendBtn.classList.add("blocked");
+      sendBtn.disabled = true;
+      sendBtn.title = "请先在客户端选择模型";
       return;
     }
     sendBtn.textContent = "发送";
@@ -1034,7 +1069,7 @@
         li.appendChild(badge);
       }
       var link = el("a", null, s.title || s.url);
-      link.href = s.url;
+      link.href = safeUrl(s.url);
       link.target = "_blank";
       link.rel = "noopener";
       li.appendChild(link);
@@ -1046,6 +1081,10 @@
 
   async function send() {
     if (busy) return;
+    if (remoteStreaming) {            // 回车也要和「停止」按钮一致：先停掉仍在生成的回答
+      stopRemoteGeneration();
+      return;
+    }
     if (serverBusy) {
       meta.textContent = "另一个对话正在生成，完成后再发送";
       fetch(api("/api/conversations"))
@@ -1060,6 +1099,7 @@
     var text = input.value.trim();
     if (!text && !pendingItems.length) return;   // 只有附件也可以发送
 
+    var sentAttachments = pendingItems.slice();  // 随本条消息一起发出的附件
     input.value = "";
     input.style.height = "auto";
     busy = true;
@@ -1067,6 +1107,8 @@
 
     var user = addTurn("user");
     paintBody(user.body, text, []);
+    appendAttachments(user.turn, sentAttachments);
+    renderPending([]);                           // 已发出，立刻清空待发送区
 
     var ai = addTurn("ai");
     var think = addThink(ai.turn);
@@ -1144,6 +1186,7 @@
         var turns = data.turns || [];
         var last = turns.length ? turns[turns.length - 1] : null;
         loadConversations(true);        // 首条消息会生成标题
+        renderPending(data.attachments || []);   // 附件已被消费，清掉残留的 chip
         stateIndex = last ? last.index : -1;
         if (last && last.role === "assistant") {
           ai.turn.dataset.index = last.index;
@@ -1189,6 +1232,9 @@
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (busy) { stopGeneration(); return; }
+      if (remoteStreaming) { stopRemoteGeneration(); return; }
+      if (sendBtn.disabled) return;        // 未选模型 / 别的会话正在生成，禁止发送
       send();
     }
   });

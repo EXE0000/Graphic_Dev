@@ -129,7 +129,15 @@
      3. 整体渲染（历史消息）
      ======================================================================= */
   function escapeHtml(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // 只放行 http(s) 链接：搜索结果/来源 URL 属于不可信内容，
+  // javascript:、data: 之类的协议会变成可点击的 XSS 入口（本页能调本地 API）。
+  function safeUrl(url) {
+    var u = String(url || "").trim();
+    return /^https?:\/\//i.test(u) ? u : "#";
   }
 
   function buildSourcesHtml(list) {
@@ -139,7 +147,7 @@
       var title = String(s.title || url);
       var date = String(s.date || "");
       var badge = date ? '<span class="src-date">' + escapeHtml(date) + '</span>' : '';
-      items += '<li>' + badge + '<a href="' + escapeHtml(url) + '" rel="noopener">'
+      items += '<li>' + badge + '<a href="' + escapeHtml(safeUrl(url)) + '" rel="noopener">'
              + escapeHtml(title) + '</a></li>';
     });
     return '<details class="sources"><summary>联网搜索 · ' + (list || []).length + ' 个来源</summary>'
@@ -154,7 +162,7 @@
       parts[i] = parts[i].replace(/\[(\d{1,2})\]/g, function (m, n) {
         var idx = parseInt(n, 10) - 1;
         if (idx < 0 || idx >= sources.length) return m;
-        return '<a class="cite" href="' + escapeHtml(sources[idx].url)
+        return '<a class="cite" href="' + escapeHtml(safeUrl(sources[idx].url))
              + '" title="' + escapeHtml(sources[idx].title || "")
              + '">' + m + '</a>';
       });
