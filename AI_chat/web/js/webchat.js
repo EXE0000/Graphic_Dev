@@ -165,7 +165,7 @@
   });
 
   function loadConversations(keepActive) {
-    fetch(api("/api/conversations" + (currentConv ? "&conv=" + currentConv : "")))
+    fetch(api("/api/conversations"))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!keepActive || !currentConv) currentConv = data.active || "";
@@ -249,6 +249,7 @@
         renderConversations(data.items || []);
         chat.innerHTML = "";
         stateIndex = -1;
+        renderPending([]);
         setTitle("新对话");
         input.focus();
       })
@@ -861,6 +862,8 @@
         var first = (data.turns || [])[0];
         setTitle(first ? "对话" : "新对话");
 
+        renderPending(data.attachments || []);      // 附件按会话保存
+
         var turns = data.turns || [];
         var lastTurn = turns.length ? turns[turns.length - 1] : null;
         if (lastTurn && lastTurn.streaming) {
@@ -944,6 +947,17 @@
 
   async function send() {
     if (busy) return;
+    if (serverBusy) {
+      meta.textContent = "另一个对话正在生成，完成后再发送";
+      fetch(api("/api/conversations"))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          serverBusy = !!data.busy;
+          updateSendState();
+        })
+        .catch(function () {});
+      return;
+    }
     var text = input.value.trim();
     if (!text) return;
 
@@ -988,7 +1002,9 @@
       });
 
       if (!resp.ok) {
-        ai.body.textContent = "请求失败：" + await resp.text();
+        // 写进 state，交给统一的收尾渲染，避免被"没有返回内容"覆盖
+        state.text = "**请求失败：** " + (await resp.text()).slice(0, 200);
+        state.dirty = true;
       } else {
         var reader = resp.body.getReader();
         var decoder = new TextDecoder();

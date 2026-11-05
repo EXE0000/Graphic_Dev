@@ -54,7 +54,7 @@ class WebChatServer:
         self.token = secrets.token_urlsafe(16)
         self.started_at = int(time.time())
         self.conversations = {}               # id -> {id,title,created,updated,messages}
-        self.attachments = []                 # 待发送附件（复用 attachments 模块）
+        self.attachments = {}                 # cid -> 待发送附件列表
         self._active = 0                      # 正在生成的对话数
         self._load_conversations()
         self._httpd = None
@@ -286,8 +286,10 @@ class WebChatServer:
             if query.get("t", [""])[0] != self.token:
                 return self._send_text(handler, 403, "forbidden")
             conv = self.get_conversation(query.get("conv", [""])[0])
-            return self._send_json(handler, {"id": conv["id"],
-                                             "turns": self.public_history(conv)})
+            return self._send_json(handler,
+                                   {"id": conv["id"],
+                                    "turns": self.public_history(conv),
+                                    "attachments": self._attachment_public(conv["id"])})
 
         if path == "/api/config":
             if query.get("t", [""])[0] != self.token:
@@ -297,6 +299,15 @@ class WebChatServer:
         return self._send_text(handler, 404, "not found")
 
     def handle_post(self, handler):
+        # 关键：先把请求体读干净。否则未读取的 body（比如 "{}"）会留在
+        # keep-alive 连接里，被当成下一个请求的请求行开头，
+        # 服务器就会报 "Unsupported method ('{}POST')" 501。
+        length = int(handler.headers.get("Content-Length") or 0)
+        try:
+            handler._body = handler.rfile.read(length) if length > 0 else b""
+        except OSError:
+            handler._body = b""
+
         parsed = urllib.parse.urlparse(handler.path)
         query = urllib.parse.parse_qs(parsed.query)
         if query.get("t", [""])[0] != self.token:
@@ -347,7 +358,8 @@ class WebChatServer:
         if parsed.path == "/api/export":
             return self.handle_export(handler)
         if parsed.path == "/api/attachments/clear":
-            self.attachments.clear()
+            conv = self.get_conversation(query.get("conv", [""])[0])
+            self.attachments.pop(conv["id"], None)
             return self._send_json(handler, {"items": []})
         if parsed.path == "/api/attachments/remove":
             return self.handle_remove_attachment(handler)
@@ -364,9 +376,8 @@ class WebChatServer:
         return self.controller.web_config()
 
     def handle_chat(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
         except ValueError:
             return self._send_text(handler, 400, "invalid json")
 
@@ -395,13 +406,13 @@ class WebChatServer:
             handler.wfile.write(chunk.encode("utf-8"))
             handler.wfile.flush()
 
+        pending = self.attachments.pop(conv["id"], [])
         texts = [{"name": a["name"], "text": a.get("text", "")}
-                 for a in self.attachments if a["kind"] == "text"]
-        images = [a.get("data_url") for a in self.attachments
+                 for a in pending if a["kind"] == "text"]
+        images = [a.get("data_url") for a in pending
                   if a["kind"] == "image"]
         conv["messages"].append({"role": "user", "content": text,
                                  "texts": texts, "images": images})
-        self.attachments.clear()
         conv["updated"] = time.time()
         if not conv.get("title") or conv["title"] == "新对话":
             conv["title"] = self._auto_title(conv["messages"])
@@ -552,9 +563,8 @@ class WebChatServer:
         return turns
 
     def handle_setting(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
         except ValueError:
             return self._send_text(handler, 400, "invalid json")
         search = payload.get("search")
@@ -570,9 +580,8 @@ class WebChatServer:
 
     def handle_delete(self, handler):
         """删除单条或批量删除；规则和客户端一致：问答成对删。"""
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
         except ValueError:
             return self._send_text(handler, 400, "invalid json")
 
@@ -612,9 +621,8 @@ class WebChatServer:
                                          "id": conv["id"]})
 
     def handle_rename(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
             cid = str(payload.get("id") or "")
             title = (payload.get("title") or "").strip()
         except ValueError:
@@ -633,9 +641,8 @@ class WebChatServer:
 
     def handle_delete_conversations(self, handler):
         """批量删除会话。"""
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
             ids = payload.get("ids") or []
         except ValueError:
             return self._send_text(handler, 400, "invalid json")
@@ -655,15 +662,16 @@ class WebChatServer:
                                          "active": self.get_conversation("")["id"]})
 
     def handle_delete_conversation(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
             cid = str(payload.get("id") or "")
         except ValueError:
             return self._send_text(handler, 400, "invalid json")
 
         if cid in self.conversations:
             self.conversations.pop(cid, None)
+            for item in self.attachments.pop(cid, []):
+                attach_mod.delete_stored(item.get("path"))
             self._save_conversations()
 
         if not self.conversations:
@@ -673,17 +681,21 @@ class WebChatServer:
                                          "active": self.get_conversation("")["id"]})
 
     # ------------------------------------------------------------ 附件
-    def _attachment_public(self):
+    def _att(self, cid):
+        """取某个会话的待发送附件列表（没有就建一个空列表）。"""
+        return self.attachments.setdefault(cid, [])
+
+    def _attachment_public(self, cid):
         return [{"id": i, "name": a["name"], "kind": a["kind"],
                  "size": a.get("size", 0)}
-                for i, a in enumerate(self.attachments)]
+                for i, a in enumerate(self._att(cid))]
 
     def handle_upload(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
-        if length > 30 * 1024 * 1024:
+        raw_body = getattr(handler, "_body", b"")
+        if len(raw_body) > 30 * 1024 * 1024:
             return self._send_text(handler, 413, "文件太大（上限 30MB）")
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(raw_body or b"{}")
             name = (payload.get("name") or "file").strip()
             raw = base64.b64decode(payload.get("data") or "")
         except Exception:
@@ -709,36 +721,41 @@ class WebChatServer:
 
         item["name"] = name or item["name"]
 
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        conv = self.get_conversation(query.get("conv", [""])[0])
+        bucket = self._att(conv["id"])
+
         if item["kind"] == "image":
-            if sum(1 for a in self.attachments if a["kind"] == "image") >= attach_mod.MAX_IMAGES:
+            if sum(1 for a in bucket if a["kind"] == "image") >= attach_mod.MAX_IMAGES:
                 return self._send_text(handler, 400,
                                        f"一次最多 {attach_mod.MAX_IMAGES} 张图片")
         else:
-            used = sum(len(a.get("text") or "") for a in self.attachments
+            used = sum(len(a.get("text") or "") for a in bucket
                        if a["kind"] == "text")
             if used + len(item.get("text") or "") > attach_mod.MAX_TOTAL_CHARS:
                 return self._send_text(handler, 400, "附件文字总量超出上限")
 
-        self.attachments.append(item)
-        return self._send_json(handler, {"items": self._attachment_public()})
+        bucket.append(item)
+        return self._send_json(handler, {"items": self._attachment_public(conv["id"])})
 
     def handle_remove_attachment(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
             index = int(payload.get("id"))
         except Exception:
             return self._send_text(handler, 400, "参数无效")
-        if 0 <= index < len(self.attachments):
-            item = self.attachments.pop(index)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        conv = self.get_conversation(query.get("conv", [""])[0])
+        bucket = self._att(conv["id"])
+        if 0 <= index < len(bucket):
+            item = bucket.pop(index)
             attach_mod.delete_stored(item.get("path"))
-        return self._send_json(handler, {"items": self._attachment_public()})
+        return self._send_json(handler, {"items": self._attachment_public(conv["id"])})
 
     # ------------------------------------------------------------ 导出
     def handle_export(self, handler):
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
             index = int(payload.get("index"))
             fmt = str(payload.get("fmt") or "").lower()
         except Exception:
@@ -781,9 +798,8 @@ class WebChatServer:
 
     def handle_export_all(self, handler):
         """导出整段对话。"""
-        length = int(handler.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(handler.rfile.read(length) or b"{}")
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
             fmt = str(payload.get("fmt") or "md").lower()
         except ValueError:
             return self._send_text(handler, 400, "invalid json")

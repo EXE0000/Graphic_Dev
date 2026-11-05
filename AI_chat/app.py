@@ -58,10 +58,9 @@ def apply_theme():
     if not qss_path.exists():
         return
     qss = qss_path.read_text(encoding="utf-8")
-    # 资源用 file URL（Windows 盘符 + 空格都能正确处理）
-    res_url = QUrl.fromLocalFile(str(RES_DIR)).toString(
-        QUrl.ComponentFormattingOption.FullyEncoded)
-    qss = (qss.replace("@RES@", res_url)
+    # 这里必须用「普通绝对路径」：Qt 的 QSS 解析器不认 file:///，
+    # 会把它当成相对路径拼到当前目录后面，导致 svg 加载失败。
+    qss = (qss.replace("@RES@", RES_DIR.as_posix())
               .replace("@UIFONT@", fonts.ui_font()))
     QApplication.instance().setStyleSheet(qss)
 DEFAULT_SYSTEM_PROMPT = """你是运行在 Graphic_Dev 桌面客户端中的 AI 助手。

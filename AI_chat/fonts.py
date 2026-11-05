@@ -73,7 +73,8 @@ def mono_font() -> str:
 def ui_font() -> str:
     """界面字体（QSS 用）。"""
     if sys.platform == "darwin":
-        return "-apple-system, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
+        # 不要写 -apple-system：Qt 没有这个字体族，会触发一次昂贵的别名枚举
+        return "'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
     if sys.platform.startswith("win"):
         return "'Segoe UI', 'Microsoft YaHei', Arial, sans-serif"
     return "'Noto Sans CJK SC', 'DejaVu Sans', Arial, sans-serif"
