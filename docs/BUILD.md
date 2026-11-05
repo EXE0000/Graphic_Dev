@@ -1,5 +1,8 @@
 # 打包与跨平台说明
 
+> 配套文档：端到端流程与方法论见 [PACKAGING.md](PACKAGING.md)；
+> Windows / Linux 逐步实操见 [BUILD_WINDOWS_LINUX.md](BUILD_WINDOWS_LINUX.md)。
+
 ## 一句话结论
 
 | 平台 | 能不能把依赖全打进包里 | 说明 |

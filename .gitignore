@@ -36,6 +36,20 @@ htmlcov/
 *.deb
 *.rpm
 
+# 可选分发格式产物（见 docs/BUILD_WINDOWS_LINUX.md 第 2、7 节）
+# pyenv 固定 Python 版本的本地文件
+.python-version
+# AppImage 更新元数据
+*.zsync
+# Flatpak 构建缓存与产物
+.flatpak-builder/
+*.flatpak
+# snapcraft 在项目根生成的构建目录（前导 / 根锚定，避免误伤同名源码目录）
+/parts/
+/prime/
+/stage/
+*.snap
+
 # ============================================================
 # 运行时数据
 # 正常情况下写到系统数据目录（见 AI_chat/app_paths.py），

@@ -2410,12 +2410,47 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         except requests.exceptions.RequestException as e:
             QMessageBox.critical(self, "失败", f"网络错误: {e}")
 
+def _fix_webengine_paths():
+    """PyInstaller + PySide6 6.12 会把 QtWebEngine 的辅助进程/资源错放到
+    framework 的 Versions/Resources/ 下，而根软链指向 Versions/A/，导致打包后
+    启动报 "could not find QtWebEngineProcess / resources"。这里在 QtWebEngine
+    初始化前自动定位真实路径并设好环境变量（仅打包后的 macOS 需要）。"""
+    if not getattr(sys, "frozen", False) or sys.platform != "darwin":
+        return
+    from pathlib import Path
+
+    contents = Path(sys.executable).resolve().parent.parent   # <App>.app/Contents
+    fw = contents / "Frameworks/PySide6/Qt/lib/QtWebEngineCore.framework"
+    root = fw if fw.is_dir() else contents / "Frameworks" / "PySide6"
+    if not root.is_dir():
+        return
+    hits = list(root.rglob("*"))
+
+    def _find(pred):
+        return next((h for h in hits if pred(h)), None)
+
+    if not os.environ.get("QTWEBENGINEPROCESS_PATH"):
+        proc = _find(lambda h: h.name == "QtWebEngineProcess"
+                     and h.is_file() and os.access(h, os.X_OK))
+        if proc:
+            os.environ["QTWEBENGINEPROCESS_PATH"] = str(proc)
+
+    if not os.environ.get("QTWEBENGINE_RESOURCES_PATH"):
+        pak = _find(lambda h: h.name == "qtwebengine_resources.pak")
+        if pak:
+            os.environ["QTWEBENGINE_RESOURCES_PATH"] = str(pak.parent)
+            locales = pak.parent / "qtwebengine_locales"
+            if locales.is_dir() and not os.environ.get("QTWEBENGINE_LOCALES_PATH"):
+                os.environ["QTWEBENGINE_LOCALES_PATH"] = str(locales)
+
+
 if __name__ == "__main__":
     # Linux 上以 root 运行时，Chromium 沙箱会直接崩溃
     if sys.platform.startswith("linux") and getattr(os, "geteuid", None) \
             and os.geteuid() == 0:
         os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
 
+    _fix_webengine_paths()          # 必须在 QApplication / WebEngine 初始化前
     app = QApplication(sys.argv)
     families = fonts.register_bundled_fonts()   # 随包字体（Linux 尤其需要）
     if families:

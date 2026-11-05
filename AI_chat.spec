@@ -12,6 +12,8 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 ROOT = Path(SPECPATH).resolve()          # noqa: F821  (SPECPATH 由 PyInstaller 注入)
 SRC = ROOT / "AI_chat"
 
@@ -26,6 +28,8 @@ fonts_dir = SRC / "resources" / "fonts"
 if fonts_dir.is_dir():
     datas.append((str(fonts_dir), "AI_chat/resources/fonts"))
 
+binaries = []
+
 # ---------------------------------------------------------------- 隐式依赖
 hiddenimports = [
     "PySide6.QtWebEngineWidgets",
@@ -35,28 +39,37 @@ hiddenimports = [
     "PySide6.QtSvg",          # QSS 里的 SVG 图标
 ]
 
+# certifi 的 CA 根证书：requests 走 HTTPS 必需，漏掉会"打包后所有网络请求 SSLError"
+datas += collect_data_files("certifi")
+
+# 注意：不要对 PySide6.QtWebEngine* 手动 collect_all——PyInstaller 内置的
+# PySide6 hook 已经会正确摆放 QtWebEngineCore.framework（含 Helpers/
+# QtWebEngineProcess.app）。手动收集会把辅助进程放到 Versions/Resources/
+# 这种错误路径，导致运行时 "could not find QtWebEngineProcess"。
+
+
 # ---------------------------------------------------------------- 裁剪体积
 # PySide6 完整安装 1.2GB，其中绝大部分用不到；逐项排除可让包体小一大截
+# 注意：不要排除 QtWebEngine 的依赖链——QtWebChannel / QtWebSockets / QtQml /
+# QtQuick / QtPositioning / QtOpenGL 都是 WebEngine 运行时必需，排掉会导致
+# 打包后启动即 ImportError（libshiboken: could not import ...）。
 excludes = [
     "PySide6.Qt3DAnimation", "PySide6.Qt3DCore", "PySide6.Qt3DExtras",
     "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DRender",
     "PySide6.QtBluetooth", "PySide6.QtCharts", "PySide6.QtDataVisualization",
     "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtHttpServer",
     "PySide6.QtLocation", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
-    "PySide6.QtNfc", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets",
-    "PySide6.QtPositioning", "PySide6.QtQml", "PySide6.QtQuick",
-    "PySide6.QtQuick3D", "PySide6.QtQuickWidgets", "PySide6.QtRemoteObjects",
+    "PySide6.QtNfc", "PySide6.QtQuick3D", "PySide6.QtRemoteObjects",
     "PySide6.QtScxml", "PySide6.QtSensors", "PySide6.QtSerialPort",
     "PySide6.QtSql", "PySide6.QtStateMachine", "PySide6.QtTest",
-    "PySide6.QtTextToSpeech", "PySide6.QtUiTools", "PySide6.QtWebChannel",
-    "PySide6.QtWebSockets", "PySide6.QtXml",
+    "PySide6.QtTextToSpeech", "PySide6.QtUiTools", "PySide6.QtXml",
     "tkinter", "unittest", "pydoc", "doctest",
 ]
 
 a = Analysis(                                        # noqa: F821
     [str(SRC / "app.py")],
     pathex=[str(SRC)],                               # 让 import app_paths 等能找到
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
