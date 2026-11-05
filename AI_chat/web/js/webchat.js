@@ -23,6 +23,7 @@
   var conversations = [];  // 会话列表
   var convList = document.getElementById("conv-list");
   var convSearch = document.getElementById("conv-search");
+  var convSearchClear = document.getElementById("conv-search-clear");
   var newConvBtn = document.getElementById("new-conv");
   var toggleSidebar = document.getElementById("toggle-sidebar");
   var searchTimer = null;
@@ -256,7 +257,19 @@
       .catch(function () {});
   });
 
+  function syncSearchClear() {
+    convSearchClear.hidden = !convSearch.value;
+  }
+
+  convSearchClear.addEventListener("click", function () {
+    convSearch.value = "";
+    syncSearchClear();
+    renderConversations(conversations);
+    convSearch.focus();
+  });
+
   convSearch.addEventListener("input", function () {
+    syncSearchClear();
     var keyword = convSearch.value.trim();
     renderConversations(conversations);      // 先按标题过滤，响应快
 

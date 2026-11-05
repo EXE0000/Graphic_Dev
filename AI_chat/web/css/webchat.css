@@ -76,6 +76,39 @@ body {
 
 .conv-search:focus { border-color: #0a84ff; }
 
+.conv-search-wrap {
+  position: relative;
+  display: flex;
+}
+
+.conv-search-wrap .conv-search {
+  flex: 1;
+  padding-right: 28px;        /* 给右侧清空按钮留位置 */
+}
+
+.conv-search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #e4e8ee;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.conv-search-clear:hover {
+  background: #d3d9e2;
+  color: #1f2328;
+}
+
 .conv-list {
   flex: 1;
   min-height: 0;          /* 同上，否则内容会把父级撑高、被 overflow:hidden 裁掉 */

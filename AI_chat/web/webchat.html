@@ -12,7 +12,11 @@
 <div class="layout">
   <aside class="sidebar" id="sidebar">
     <button class="new-conv" id="new-conv">＋ 新建对话</button>
-    <input class="conv-search" id="conv-search" placeholder="搜索对话…">
+    <div class="conv-search-wrap">
+      <input class="conv-search" id="conv-search" placeholder="搜索对话…">
+      <button class="conv-search-clear" id="conv-search-clear" hidden
+              title="清空搜索">✕</button>
+    </div>
     <div class="conv-bar">
       <button class="mini" id="conv-manage">管理</button>
       <button class="mini danger" id="conv-delete-selected" hidden>删除选中 (0)</button>
