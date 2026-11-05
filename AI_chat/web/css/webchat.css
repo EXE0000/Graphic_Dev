@@ -627,3 +627,63 @@ body {
   background: #d8e8ff;
   text-decoration: underline;
 }
+
+/* ---------- 推理强度滑块 ---------- */
+.reasoning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: #57606a;
+  user-select: none;
+}
+
+.reasoning input[type="range"] {
+  width: 78px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 2px;
+  background: #d9dee5;
+  outline: none;
+  cursor: pointer;
+}
+
+.reasoning input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #0a84ff;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  cursor: pointer;
+}
+
+.reasoning-label {
+  min-width: 22px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #1f2328;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 模型不支持推理强度时置灰 */
+.reasoning.disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.reasoning.disabled input[type="range"] {
+  cursor: not-allowed;
+  background: #e5e8ed;
+}
+
+.reasoning.disabled input[type="range"]::-webkit-slider-thumb {
+  background: #b6bcc4;
+  box-shadow: none;
+}

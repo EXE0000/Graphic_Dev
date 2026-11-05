@@ -11,11 +11,10 @@ from urllib.parse import quote, unquote
 
 import requests
 
-from PySide6.QtCore import (QEvent, QObject, QSettings, QSize, QThread, QTimer,
+from PySide6.QtCore import (QEvent, QObject, QSettings, QThread, QTimer,
                             Qt, QUrl, Signal)
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
-from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHeaderView,
                                QMainWindow, QMessageBox, QPushButton,
                                QTableWidgetItem)
@@ -109,25 +108,88 @@ SEARCH_CAPABILITY = """## 联网检索（内置说明）
 NON_CHAT_KEYWORDS = ("embedding", "rerank", "tts", "whisper", "moderation")
 
 
-def thinking_params(url: str, enabled: bool) -> dict:
-    """不同服务商用不同字段控制「深度思考」。
+REASONING_LEVELS = ("off", "low", "medium", "high")
+REASONING_LABELS = {"off": "关闭", "low": "低", "medium": "中", "high": "高"}
+REASONING_BUDGET = {"low": 1024, "medium": 4096, "high": 16384}
 
-    只对认得出的一线服务商显式下发；未知网关开启时不下发（默认就会思考），
-    关闭时才带 enable_thinking，并在 400 时自动降级重试。
+
+def thinking_params(url: str, level: str = "medium") -> dict:
+    """把「推理强度」翻译成各家服务商的参数。
+
+    level 取值：off / low / medium / high。
+    对认不出的一线服务商按各自字段下发；未知的 OpenAI 兼容网关
+    （LM Studio、Ollama、vLLM 等）显式下发 reasoning_effort，
+    避免服务端用自己的默认值（有的默认是 xhigh，会拖慢几十倍）。
     """
     host = (url or "").lower()
+    level = level if level in REASONING_LEVELS else "medium"
 
-    if "dashscope" in host or "aliyuncs" in host or "qianwenai" in host:
-        return {"enable_thinking": bool(enabled)}
-    if "deepseek" in host:
-        return {"thinking": {"type": "enabled" if enabled else "disabled"}}
-    if "openai" in host:
-        return {"reasoning_effort": "medium" if enabled else "minimal"}
-    if "moonshot" in host:
-        return {"thinking": {"type": "enabled" if enabled else "disabled"}}
-    if enabled:
-        return {}
-    return {"enable_thinking": False}
+    dashscope = "dashscope" in host or "aliyuncs" in host or "qianwenai" in host
+    deepseek = "deepseek" in host
+    openai = "openai" in host
+    moonshot = "moonshot" in host
+
+    if level == "off":
+        if dashscope:
+            return {"enable_thinking": False}
+        if deepseek:
+            return {"thinking": {"type": "disabled"}}
+        if openai:
+            return {"reasoning_effort": "minimal"}
+        if moonshot:
+            return {"thinking": {"type": "disabled"}}
+        # 未知的 OpenAI 兼容网关：用 minimal，避免服务端回落到默认的强推理
+        return {"reasoning_effort": "minimal"}
+
+    if dashscope:
+        return {"enable_thinking": True,
+                "thinking_budget": REASONING_BUDGET.get(level, 4096)}
+    if deepseek:
+        return {"thinking": {"type": "enabled"}}
+    if openai:
+        return {"reasoning_effort": level}
+    if moonshot:
+        return {"thinking": {"type": "enabled"}}
+
+    return {"reasoning_effort": level}
+
+
+# 明确不带推理参数的模型家族（命中就不允许调）
+_NO_REASONING_HINTS = (
+    "gpt-4o", "gpt-4-turbo", "gpt-3.5", "qwen2.5", "qwen2-", "qwen-turbo",
+    "llama", "mistral", "mixtral", "gemma", "phi-", "chatglm", "baichuan",
+)
+
+# 明确支持推理强度的模型家族
+_REASONING_HINTS = (
+    "o1", "o3", "o4", "gpt-5", "qwq", "qwen3", "deepseek-reasoner",
+    "reasoner", "thinking", "kimi-k2", "glm-4.5", "glm-4.6", "minimax-m2",
+)
+
+# 这些网关的通用接口基本都接受推理参数
+_REASONING_HOSTS = ("dashscope", "aliyuncs", "qianwenai", "openai.com",
+                    "deepseek.com", "moonshot")
+
+
+def reasoning_support(url: str, model: str):
+    """判断某个模型能不能调推理强度，返回 (是否支持, 说明)。"""
+    name = (model or "").strip().lower()
+    if not name:
+        return False, "请先选择模型"
+
+    for hint in _NO_REASONING_HINTS:
+        if hint in name:
+            return False, "该模型没有推理强度参数，滑块不可用"
+
+    for hint in _REASONING_HINTS:
+        if hint in name:
+            return True, ""
+
+    host = (url or "").lower()
+    if any(key in host for key in _REASONING_HOSTS):
+        return True, ""
+
+    return True, "不确定该模型是否支持推理强度，可自行尝试"
 
 
 def is_chat_model(name: str) -> bool:
@@ -242,6 +304,153 @@ class ChatPage(QWebEnginePage):
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
 
+class ReasoningProbeWorker(QThread):
+    """判断当前模型能不能调推理强度。
+
+    只看模型名不可靠，只看"接口没报错"也不可靠（LM Studio 会静默忽略
+    reasoning_effort）。所以按顺序验证：
+
+      1. LM Studio 原生接口 /api/v0/models 的 capabilities（最权威）
+      2. 用「我们实际会发的参数」去测：各厂商机制不同
+         （OpenAI 系=reasoning_effort，DeepSeek/Moonshot=thinking，
+           DashScope=enable_thinking + thinking_budget）
+      3. 未知网关：要求两次请求的思考量有明显差异才算支持
+    """
+
+    done = Signal(str, str)          # key, "yes" / "no" / "unknown"
+
+    # 一线厂商：只要参数被接受就认为可控（思考量不一定在小样本上体现）
+    KNOWN_HOSTS = ("openai.com", "deepseek.com", "dashscope", "aliyuncs",
+                   "qianwenai", "moonshot")
+
+    def __init__(self, url, key, model, cap_key):
+        super().__init__()
+        self.url = url
+        self.key = key
+        self.model = model
+        self.cap_key = cap_key
+
+    # ---------- 1. 原生能力 ----------
+    def _native_capabilities(self):
+        base = self.url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        try:
+            resp = requests.get(f"{base}/api/v0/models", timeout=8)
+        except requests.exceptions.RequestException:
+            return None
+        if resp.status_code != 200:
+            return None
+        try:
+            data = resp.json().get("data") or []
+        except ValueError:
+            return None
+
+        for item in data:
+            ident = str(item.get("id") or "")
+            if ident != self.model and not ident.endswith("/" + self.model) \
+                    and self.model not in ident:
+                continue
+            caps = item.get("capabilities")
+            if isinstance(caps, dict):
+                caps = list(caps.keys())
+            return caps if isinstance(caps, list) else []
+        return None
+
+    # ---------- 2. 实测 ----------
+    def _ask(self, extra):
+        """返回思考 token 数 / "rejected" / None（网络或其他错误）。"""
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "2+2=?"}],
+            "max_tokens": 64,
+            "stream": False,
+        }
+        payload.update(extra or {})
+
+        try:
+            resp = requests.post(
+                f"{self.url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {self.key}",
+                         "Content-Type": "application/json"},
+                json=payload, timeout=60,
+            )
+        except requests.exceptions.RequestException:
+            return None
+
+        if resp.status_code in (400, 422):
+            text = (resp.text or "").lower()
+            hints = ("reasoning_effort", "thinking", "unsupported", "unrecognized",
+                     "not support", "unknown", "invalid", "extra", "budget")
+            return "rejected" if any(h in text for h in hints) else None
+        if resp.status_code != 200:
+            return None
+
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+
+        message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+        usage = data.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        tokens = details.get("reasoning_tokens")
+        if isinstance(tokens, int):
+            return tokens
+        return len(message.get("reasoning_content") or "")
+
+    def _param_sets(self):
+        """(off 参数, high 参数) 的候选列表：厂商机制 + 通用 reasoning_effort。"""
+        sets = []
+        try:
+            provider_high = thinking_params(self.url, "high")
+            provider_off = thinking_params(self.url, "off")
+            if provider_high and provider_high != {"reasoning_effort": "high"}:
+                sets.append((provider_off, provider_high))
+        except Exception:                        # noqa: BLE001
+            pass
+        sets.append(({"reasoning_effort": "minimal"}, {"reasoning_effort": "high"}))
+        return sets
+
+    def run(self):
+        caps = self._native_capabilities()
+        if caps is not None:
+            has = any("reason" in str(c).lower() for c in caps)
+            self.done.emit(self.cap_key, "yes" if has else "no")
+            return
+
+        known = any(h in self.url.lower() for h in self.KNOWN_HOSTS)
+        accepted = False
+        network_error = False
+
+        for off_params, high_params in self._param_sets():
+            low = self._ask(off_params)
+            high = self._ask(high_params)
+
+            if low is None and high is None:
+                network_error = True
+                continue
+            if low == "rejected" and high == "rejected":
+                continue                          # 这套机制不支持，换下一套
+            if not (isinstance(low, int) and isinstance(high, int)):
+                accepted = True                   # 接受了但拿不到 token 细节
+                continue
+
+            accepted = True
+            if high >= max(low * 1.5, low + 8):
+                self.done.emit(self.cap_key, "yes")
+                return
+
+        if accepted and known:
+            self.done.emit(self.cap_key, "yes")
+        elif accepted:
+            self.done.emit(self.cap_key, "no")
+        elif network_error:
+            self.done.emit(self.cap_key, "unknown")
+        else:
+            self.done.emit(self.cap_key, "no")
+
+
 class ChatWorker(QThread):
     chunk = Signal(str)            # 正文增量
     think = Signal(str)            # 思考增量
@@ -253,7 +462,7 @@ class ChatWorker(QThread):
     image_generated = Signal(str)  # 生成好一张图，通知前端立刻显示
 
     def __init__(self, url, key, model, history, use_search=False, search_key="",
-                 search_provider=DEFAULT_PROVIDER, use_thinking=True,
+                 search_provider=DEFAULT_PROVIDER, reasoning_level="medium",
                  image_config=None):
         super().__init__()
         self.url = url
@@ -263,7 +472,7 @@ class ChatWorker(QThread):
         self.use_search = use_search
         self.search_key = search_key
         self.search_provider = search_provider
-        self.use_thinking = use_thinking
+        self.reasoning_level = reasoning_level
         self.image_config = image_config or None
         self.generated_images = []
         self._thinking_fallback = False
@@ -608,8 +817,8 @@ class ChatWorker(QThread):
             payload["tool_choice"] = "auto"
 
         thinking = {}
-        if not self._thinking_fallback:
-            thinking = thinking_params(self.url, self.use_thinking)
+        if not self._thinking_fallback and self.reasoning_level != "none":
+            thinking = thinking_params(self.url, self.reasoning_level)
             payload.update(thinking)
 
         content, reasoning = [], []
@@ -713,6 +922,7 @@ class ModelsWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 class MainWindow(QMainWindow, Ui_MainWindow):
+    probe_requested = Signal()
     def __init__(self):
         super().__init__()
         self.setupUi(self)
@@ -725,12 +935,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._attachments = []
         self._streaming = False
         self._settings = QSettings(ORG, APP_NAME)
+        self._reasoning_caps = {}         # "url|model" -> "yes"/"no"
+        self._probe_worker = None
+        self.probe_requested.connect(self._maybe_probe_reasoning)
         self.web_server = None
         self._web_worker = None
         self._gui_tasks = queue.Queue()
 
         self._models_by_url = {}
         self._selected_by_url = {}
+        self._reasoning_caps = {}
         self._current_url = ""
 
         self._init_ui()
@@ -739,6 +953,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._gui_timer.start(20)      # HTTP 线程的任务在这里执行
         self._connect_signals()
         self._load_settings()
+        self._ui_ready = True             # 加载完成后再允许探测能力
         self._load_history()
         attach_mod.cleanup_old()          # 清掉过期的附件副本
 
@@ -824,6 +1039,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             str(s.value("deep_thinking", "true")).lower() == "true")
         self.capability_prompt_check.setChecked(
             str(s.value("capability_prompt", "true")).lower() == "true")
+        try:
+            cached = json.loads(s.value("reasoning_caps", "{}", type=str)) or {}
+            # 只保留当前探测版本（v2）的结论，旧版本结论可能不准
+            self._reasoning_caps = {k: v for k, v in cached.items()
+                                    if isinstance(k, str) and k.startswith("v3|")}
+        except (ValueError, TypeError):
+            self._reasoning_caps = {}
         self.image_model_text.setText(s.value("image_model", "", type=str))
         self.image_url_text.setText(s.value("image_url", "", type=str))
         self.image_key_text.setText(self._secret("image_key"))
@@ -841,6 +1063,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             # 延后一点，避免被初始化阶段其它状态提示覆盖
             QTimer.singleShot(1200, lambda: self.statusbar.showMessage(
                 "内置能力说明已关闭，公式 / 图表 / 配图可能不渲染", 10000))
+
+        self._update_reasoning_control()
 
         tip = "密钥保存在：" + secrets_store.status_text()
         for widget in (self.api_key_text, self.image_key_text, self.search_key_text):
@@ -887,6 +1111,22 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         return "\n\n".join(part for part in parts if part.strip())
 
     def closeEvent(self, event):
+        # 生成中直接关窗口会让 QThread 被 GC —— Qt 会 abort（进程崩溃）。
+        # 先让 worker 停下来并等它退出。
+        for worker in (getattr(self, "worker", None),
+                       getattr(self, "_web_worker", None),
+                       getattr(self, "models_worker", None),
+                       getattr(self, "_probe_worker", None)):
+            if worker is None:
+                continue
+            try:
+                if worker.isRunning():
+                    if hasattr(worker, "cancel"):
+                        worker.cancel()
+                    worker.wait(3000)
+            except RuntimeError:
+                pass
+
         if self.web_server is not None:
             self.web_server.stop()
         self._save_settings()
@@ -1213,6 +1453,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # 3) 界面复位
         self._models_by_url = {}
         self._selected_by_url = {}
+        self._reasoning_caps = {}
         self._current_url = ""
         self.models_table.setRowCount(0)
         self.api_key_text.clear()
@@ -1287,8 +1528,81 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 name.setFont(font)
         self.models_table.blockSignals(False)
 
+    @staticmethod
+    def _cap_key(url: str, model: str) -> str:
+        # v2：探测方式变了，旧结论作废
+        return "v3|" + (url or "").strip().rstrip("/") + "|" + (model or "").strip()
+
+    def _reasoning_state(self):
+        """推理强度是否可用：优先用探测结果，其次用名字启发式。"""
+        model = self.current_model()
+        cfg = self.get_api_config()
+        url = cfg[0] if cfg else ""
+
+        if not model:
+            return False, "请先选择模型"
+
+        cached = self._reasoning_caps.get(self._cap_key(url, model))
+        if cached == "yes":
+            return True, ""
+        if cached == "no":
+            return False, "该模型/服务端不支持调整推理强度（已实测）"
+
+        supported, note = reasoning_support(url, model)
+        if supported and cfg and getattr(self, "_ui_ready", False):
+            # 还没测过：抛个信号让 GUI 线程去测（HTTP 线程里不能直接建 QThread）
+            self.probe_requested.emit()
+        return supported, note
+
+    def _probe_state(self):
+        """pending = 还没测出结果，网页端据此稍后重拉配置。"""
+        cfg = self.get_api_config()
+        model = self.current_model()
+        if not cfg or not model:
+            return ""
+        cached = self._reasoning_caps.get(self._cap_key(cfg[0], model))
+        if cached:
+            return cached
+        return "pending" if reasoning_support(cfg[0], model)[0] else "no"
+
+    def _maybe_probe_reasoning(self):
+        """后台实测一次，结果缓存到配置里，只测每个 (地址, 模型) 一次。"""
+        cfg = self.get_api_config()
+        model = self.current_model()
+        if not cfg or not model:
+            return
+        cap_key = self._cap_key(cfg[0], model)
+        if cap_key in self._reasoning_caps:
+            return
+        if self._probe_worker is not None and self._probe_worker.isRunning():
+            return
+
+        self._probe_worker = ReasoningProbeWorker(cfg[0], cfg[1], model, cap_key)
+        self._probe_worker.done.connect(self._on_reasoning_probe)
+        self._probe_worker.start()
+
+    def _on_reasoning_probe(self, cap_key: str, verdict: str):
+        if verdict == "unknown":
+            return                                  # 测不出来就保持启发式
+        self._reasoning_caps[cap_key] = verdict
+        try:
+            self._settings.setValue("reasoning_caps",
+                                    json.dumps(self._reasoning_caps, ensure_ascii=False))
+            self._settings.sync()
+        except Exception:                            # noqa: BLE001
+            pass
+        self._update_reasoning_control()
+
+    def _update_reasoning_control(self):
+        """模型不支持推理强度时，把客户端复选框置灰。"""
+        supported, note = self._reasoning_state()
+        self.reasoning_check.setEnabled(supported)
+        self.reasoning_check.setToolTip(
+            note or "关闭后直接作答，速度更快；部分模型不支持关闭思考")
+
     def _refresh_model_label(self):
         self.model_select_name.setText(self.current_model() or "（未选择）")
+        self._update_reasoning_control()
 
     # ---------- 图片模型列表 ----------
     BUILTIN_IMAGE_MODELS = [
@@ -1334,7 +1648,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         key = (self.image_key_text.text().strip()
                or self.api_key_text.text().strip())
 
-        models, error, used = [], "", ""
+        models, error = [], ""
         endpoints = self._models_endpoints(base)
         if endpoints and key:
             self.statusbar.showMessage("正在获取图片模型…")
@@ -1356,7 +1670,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     found = [m for m in ids
                              if any(h in m.lower() for h in self.IMAGE_MODEL_HINTS)]
                     if found:
-                        models, used, error = found, endpoint, ""
+                        models, error = found, ""
                         break
                     error = "接口有响应，但没有图片类模型"
             finally:
@@ -1420,6 +1734,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         导出要用 QWebEngine 渲染公式、Qt 打印 PDF，这些都只能在 GUI 线程做；
         HTTP 线程直接调用会崩或者静默失败。
         """
+        # 万一从 GUI 线程调用，等待会死锁（排队的任务只能由 GUI 线程自己执行）
+        if QThread.currentThread() is self.thread():
+            return fn()
+
         done = threading.Event()
         box = {}
 
@@ -1557,10 +1875,19 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             "search": self.search_check.isChecked(),
             "image": bool(self.image_config()),
             "thinking": self.reasoning_check.isChecked(),
+            "reasoning_supported": self._reasoning_state()[0],
+            "reasoning_note": self._reasoning_state()[1],
+            "reasoning_probe": self._probe_state(),
             "exports": list(exporters.EXPORTERS.keys()),
         }
 
-    def web_stream(self, messages):
+    def reasoning_level(self):
+        """桌面端复选框 → 推理强度（网页端会另外指定）。"""
+        if not self._reasoning_state()[0]:
+            return "none"                    # 模型不支持就完全不下发参数
+        return "medium" if self.reasoning_check.isChecked() else "off"
+
+    def web_stream(self, messages, reasoning=None):
         """把 ChatWorker 的信号转成生成器，供 HTTP 响应逐条写出。"""
         cfg = self.get_api_config()
         model = self.current_model()
@@ -1575,7 +1902,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             use_search=self.search_check.isChecked(),
             search_key=self.search_key_text.text().strip(),
             search_provider=self.search_provider_combo.currentData() or DEFAULT_PROVIDER,
-            use_thinking=self.reasoning_check.isChecked(),
+            reasoning_level=("none" if not self._reasoning_state()[0] else
+                             (reasoning or "medium")
+                             if (reasoning or self.reasoning_check.isChecked())
+                             else "off"),
             image_config=self.image_config(),
         )
         # 必须用 DirectConnection：这些 lambda 没有 QObject 归属，
@@ -1610,7 +1940,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             if worker.isRunning():
                 worker.cancel()
                 worker.wait(3000)
-            self._web_worker = None
+            if self._web_worker is worker:      # 可能已被另一路生成覆盖
+                self._web_worker = None
 
     def _web_image(self, markdown_snippet: str) -> str:
         """把 file:// 图片换成网页能访问的 /media 地址。"""
@@ -1823,7 +2154,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                                  use_search=use_search,
                                  search_key=search_key,
                                  search_provider=search_provider,
-                                 use_thinking=self.reasoning_check.isChecked(),
+                                 reasoning_level=self.reasoning_level(),
                                  image_config=self.image_config())
         self.worker.search_note.connect(lambda msg: self.statusbar.showMessage(msg))
         self.worker.reset_stream.connect(
@@ -1964,8 +2295,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             QMessageBox.warning(self, "提示", "请先填写 API 地址和 KEY")
             return
         url, key = cfg
-        base = url.rstrip('/')
-
         base = url.rstrip("/")
         try:
             resp = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"}, timeout=10)

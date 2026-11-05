@@ -8,7 +8,6 @@
 import base64
 import re
 import shutil
-import tempfile
 import time
 import unicodedata
 import zipfile
@@ -46,15 +45,6 @@ class AttachmentError(RuntimeError):
 
 # ---------------- 附件仓库 ----------------
 _STORE_DIR = None
-
-
-def _store_candidates():
-    """按优先级给出候选目录：应用数据目录 → 家目录隐藏目录 → 临时目录。"""
-    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation)
-    if base:
-        yield Path(base) / "Graphic_Dev" / "AI_chat" / "attachments"
-    yield Path.home() / ".graphic_dev" / "attachments"
-    yield Path(tempfile.gettempdir()) / "graphic_dev_attachments"
 
 
 def store_dir():

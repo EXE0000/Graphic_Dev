@@ -12,7 +12,10 @@
   var pendingBox = document.getElementById("pending");
   var exportFormats = [["md", "MD"], ["docx", "Word"], ["pdf", "PDF"], ["xlsx", "Excel"]];
   var toggleSearch = document.getElementById("toggle-search");
-  var toggleThinking = document.getElementById("toggle-thinking");
+  var reasoningRange = document.getElementById("reasoning-range");
+  var reasoningLabel = document.getElementById("reasoning-label");
+  var REASONING_LEVELS = ["off", "low", "medium", "high"];
+  var REASONING_TEXT = { off: "关闭", low: "低", medium: "中", high: "高" };
   var manageBtn = document.getElementById("manage");
   var deleteSelectedBtn = document.getElementById("delete-selected");
   var cancelManageBtn = document.getElementById("cancel-manage");
@@ -34,6 +37,7 @@
   var convDeleteBtn = document.getElementById("conv-delete-selected");
   var convDeleteEmptyBtn = document.getElementById("conv-delete-empty");
   var convCancelBtn = document.getElementById("conv-cancel-manage");
+  var pendingItems = [];      // 当前待发送附件
   var streamPoll = null;      // 轮询"仍在生成"的会话
   var remoteStreaming = false; // 服务端仍在生成（刷新后也要显示「停止」）
   var serverBusy = false;      // 任意会话正在生成（别的会话里要禁用发送）
@@ -468,8 +472,51 @@
     });
   }
 
+
+  // 模型输出属于不可信内容：插入 DOM 前必须去掉脚本和事件属性，
+  // 否则一段 <img onerror=...> 就能在页面里执行任意 JS（页面能调用本地 API）。
+  var _BLOCKED_TAGS = ["script", "iframe", "object", "embed", "link", "meta",
+                       "style", "base", "form", "input", "button", "textarea",
+                       "select", "svg"];
+
+  function sanitizeHtml(html) {
+    if (!html) return "";
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(html, "text/html");
+    } catch (e) {
+      return String(html).replace(/</g, "&lt;");
+    }
+    _BLOCKED_TAGS.forEach(function (tag) {
+      Array.prototype.forEach.call(doc.querySelectorAll(tag), function (el) {
+        el.parentNode && el.parentNode.removeChild(el);
+      });
+    });
+    Array.prototype.forEach.call(doc.querySelectorAll("*"), function (el) {
+      for (var i = el.attributes.length - 1; i >= 0; i--) {
+        var attr = el.attributes[i];
+        var name = attr.name.toLowerCase();
+        var value = (attr.value || "").replace(/[\s\u0000]+/g, "").toLowerCase();
+        var isEvent = name.indexOf("on") === 0;
+        var isJsUrl = (name === "href" || name === "src" || name === "action"
+                       || name === "xlink:href" || name === "formaction")
+                      && (value.indexOf("javascript:") === 0
+                          || value.indexOf("data:text/html") === 0
+                          || value.indexOf("vbscript:") === 0);
+        if (isEvent || isJsUrl) el.removeAttribute(attr.name);
+      }
+      if (el.tagName === "A" && el.getAttribute("href")) {
+        el.setAttribute("target", "_blank");
+        el.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+    return doc.body.innerHTML;
+  }
+
   function renderMarkdown(text) {
-    return window.marked ? marked.parse(text) : String(text).replace(/</g, "&lt;");
+    var html = window.marked ? marked.parse(text)
+                             : String(text).replace(/</g, "&lt;");
+    return sanitizeHtml(html);
   }
 
   function paintBody(node, markdown, sources) {
@@ -532,22 +579,49 @@
   }
 
   // ------------------------------------------------------------ 配置
-  fetch(api("/api/config"))
+  function loadConfig(retries) {
+    retries = retries || 0;
+    fetch(api("/api/config"))
     .then(function (r) { return r.json(); })
     .then(function (cfg) {
       var bits = [cfg.model || "未选择模型"];
       if (cfg.search) bits.push("联网搜索");
       if (cfg.image) bits.push("文生图");
-      if (cfg.thinking) bits.push("深度思考");
+      if (cfg.reasoning_supported !== false && cfg.reasoning
+          && cfg.reasoning !== "off") {
+        bits.push("推理" + (REASONING_TEXT[cfg.reasoning] || ""));
+      }
       meta.textContent = bits.join(" · ");
       if (!cfg.ready) meta.textContent = "配置不完整：" + (cfg.reason || "");
       toggleSearch.checked = !!cfg.search;
-      toggleThinking.checked = !!cfg.thinking;
+      if (cfg.reasoning !== undefined) {
+        var index = REASONING_LEVELS.indexOf(cfg.reasoning);
+        if (index < 0) index = 2;
+        reasoningRange.value = index;
+        reasoningLabel.textContent = REASONING_TEXT[REASONING_LEVELS[index]];
+      }
+
+      // 能力探测是异步的：还没出结果时，稍后重拉配置
+      if (cfg.reasoning_probe === "pending" && retries < 3) {
+        setTimeout(function () { loadConfig(retries + 1); }, 3000);
+      }
+
+      // 模型不支持推理强度 → 滑块置灰
+      var supported = cfg.reasoning_supported !== false;
+      reasoningRange.disabled = !supported;
+      reasoningRange.closest(".reasoning").classList.toggle("disabled", !supported);
+      reasoningRange.title = supported
+        ? (cfg.reasoning_note || "推理强度：越高越慢但更仔细")
+        : (cfg.reasoning_note || "该模型不支持调整推理强度");
     })
     .catch(function () { meta.textContent = "配置读取失败"; });
+  }
+
+  loadConfig(0);
 
   // ------------------------------------------------------------ 附件
   function renderPending(items) {
+    pendingItems = items || [];
     pendingBox.innerHTML = "";
     (items || []).forEach(function (item) {
       var chip = el("span", "chip");
@@ -715,18 +789,30 @@
   function pushSettings() {
     postJSON("/api/setting", {
       search: toggleSearch.checked,
-      thinking: toggleThinking.checked
+      reasoning: REASONING_LEVELS[Number(reasoningRange.value)] || "medium"
     }).then(function (r) { return r.json(); }).then(function (cfg) {
       var bits = [cfg.model || "未选择模型"];
       if (cfg.search) bits.push("联网搜索");
       if (cfg.image) bits.push("文生图");
-      if (cfg.thinking) bits.push("深度思考");
+      if (cfg.reasoning_supported !== false && cfg.reasoning
+          && cfg.reasoning !== "off") {
+        bits.push("推理" + (REASONING_TEXT[cfg.reasoning] || ""));
+      }
       meta.textContent = bits.join(" · ");
     }).catch(function () {});
   }
 
   toggleSearch.addEventListener("change", pushSettings);
-  toggleThinking.addEventListener("change", pushSettings);
+
+  // 推理强度滑块：拖动时只更新文字，松手（change）才请求后端，避免刷屏
+  reasoningRange.addEventListener("input", function () {
+    var level = REASONING_LEVELS[Number(reasoningRange.value)] || "medium";
+    reasoningLabel.textContent = REASONING_TEXT[level];
+  });
+
+  reasoningRange.addEventListener("change", function () {
+    pushSettings();
+  });
 
   // ------------------------------------------------------------ 历史恢复
   function renderHistoryTurn(turn) {
@@ -972,7 +1058,7 @@
       return;
     }
     var text = input.value.trim();
-    if (!text) return;
+    if (!text && !pendingItems.length) return;   // 只有附件也可以发送
 
     input.value = "";
     input.style.height = "auto";

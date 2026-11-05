@@ -44,11 +44,20 @@ def _headers(key: str, extra=None) -> dict:
     return headers
 
 
+MAX_IMAGE_BYTES = 32 * 1024 * 1024     # 单张图上限，防止异常大文件
+
+
 def _download(url: str) -> bytes:
-    resp = requests.get(url, timeout=120)
+    resp = requests.get(url, timeout=120, stream=True)
     if resp.status_code != 200:
         raise ImageGenError(f"下载图片失败：HTTP {resp.status_code}")
-    return resp.content
+    data = bytearray()
+    for chunk in resp.iter_content(64 * 1024):
+        data.extend(chunk)
+        if len(data) > MAX_IMAGE_BYTES:
+            resp.close()
+            raise ImageGenError("图片太大（超过 32MB）")
+    return bytes(data)
 
 
 def _dashscope_size(size: str) -> str:

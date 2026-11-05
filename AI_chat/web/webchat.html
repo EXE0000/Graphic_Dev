@@ -32,7 +32,11 @@
   <div class="brand">AI Chat <span class="badge">Web</span></div>
   <div class="meta" id="meta">连接中…</div>
   <label class="toggle"><input type="checkbox" id="toggle-search"> 联网搜索</label>
-  <label class="toggle"><input type="checkbox" id="toggle-thinking"> 深度思考</label>
+  <label class="reasoning" title="推理强度：越高越慢但更仔细；本地模型默认可能很高，调低会明显变快">
+    <span>推理</span>
+    <input type="range" id="reasoning-range" min="0" max="3" step="1" value="2">
+    <span id="reasoning-label" class="reasoning-label">中</span>
+  </label>
   <select class="fmt" id="export-fmt" title="导出格式">
     <option value="md">Markdown</option>
     <option value="docx">Word</option>

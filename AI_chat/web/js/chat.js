@@ -44,8 +44,49 @@
     return parts.join("```");
   }
 
+
+  // 模型输出属于不可信内容：插入 DOM 前必须去掉脚本和事件属性，
+  // 否则一段 <img onerror=...> 就能在页面里执行任意 JS（页面能调用本地 API）。
+  var _BLOCKED_TAGS = ["script", "iframe", "object", "embed", "link", "meta",
+                       "style", "base", "form", "input", "button", "textarea",
+                       "select", "svg"];
+
+  function sanitizeHtml(html) {
+    if (!html) return "";
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(html, "text/html");
+    } catch (e) {
+      return String(html).replace(/</g, "&lt;");
+    }
+    _BLOCKED_TAGS.forEach(function (tag) {
+      Array.prototype.forEach.call(doc.querySelectorAll(tag), function (el) {
+        el.parentNode && el.parentNode.removeChild(el);
+      });
+    });
+    Array.prototype.forEach.call(doc.querySelectorAll("*"), function (el) {
+      for (var i = el.attributes.length - 1; i >= 0; i--) {
+        var attr = el.attributes[i];
+        var name = attr.name.toLowerCase();
+        var value = (attr.value || "").replace(/[\s\u0000]+/g, "").toLowerCase();
+        var isEvent = name.indexOf("on") === 0;
+        var isJsUrl = (name === "href" || name === "src" || name === "action"
+                       || name === "xlink:href" || name === "formaction")
+                      && (value.indexOf("javascript:") === 0
+                          || value.indexOf("data:text/html") === 0
+                          || value.indexOf("vbscript:") === 0);
+        if (isEvent || isJsUrl) el.removeAttribute(attr.name);
+      }
+      if (el.tagName === "A" && el.getAttribute("href")) {
+        el.setAttribute("target", "_blank");
+        el.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+    return doc.body.innerHTML;
+  }
+
   var _markedParse = marked.parse;
-  marked.parse = function (src) { return _markedParse(normalizeMath(src)); };
+  marked.parse = function (src) { return sanitizeHtml(_markedParse(normalizeMath(src))); };
 
   /* =======================================================================
      2. 滚动跟随 + 回到最新

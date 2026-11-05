@@ -12,7 +12,6 @@ import base64
 import json
 import mimetypes
 import pathlib
-import queue
 import secrets
 import tempfile
 import threading
@@ -55,7 +54,10 @@ class WebChatServer:
         self.started_at = int(time.time())
         self.conversations = {}               # id -> {id,title,created,updated,messages}
         self.attachments = {}                 # cid -> 待发送附件列表
+        self._lock = threading.RLock()        # 保护 conversations 的并发读写
         self._active = 0                      # 正在生成的对话数
+        self.reasoning = ("medium" if controller.reasoning_check.isChecked()
+                          else "off")          # 网页端推理强度
         self._load_conversations()
         self._httpd = None
         self._thread = None
@@ -75,6 +77,12 @@ class WebChatServer:
                     }
         except (OSError, ValueError):
             self.conversations = {}
+
+        # 上次进程异常退出时可能留下 streaming=True，这里统一清掉，
+        # 否则页面会一直显示"生成中"并无限轮询
+        for conv in self.conversations.values():
+            for message in conv.get("messages") or []:
+                message.pop("streaming", None)
 
         if self.conversations:
             return
@@ -102,19 +110,21 @@ class WebChatServer:
                 "created": now, "updated": now, "messages": []}
 
     def create_conversation(self, title="新对话"):
-        conv = self._new_record(title)
-        self.conversations[conv["id"]] = conv
-        self._save_conversations()
+        with self._lock:
+            conv = self._new_record(title)
+            self.conversations[conv["id"]] = conv
+            self._save_conversations()
         return conv
 
     def get_conversation(self, cid):
-        if cid and cid in self.conversations:
-            return self.conversations[cid]
-        # 没传/传错就退回最近更新的一条
-        if not self.conversations:
-            self.create_conversation()
-        return max(self.conversations.values(),
-                   key=lambda c: c.get("updated") or 0)
+        with self._lock:
+            if cid and cid in self.conversations:
+                return self.conversations[cid]
+            # 没传/传错就退回最近更新的一条
+            if not self.conversations:
+                self.create_conversation()
+            return max(self.conversations.values(),
+                       key=lambda c: c.get("updated") or 0)
 
     def search_conversations(self, keyword: str, limit: int = 60):
         """按标题和正文全文搜索会话。"""
@@ -124,7 +134,9 @@ class WebChatServer:
         needle = keyword.lower()
 
         hits = []
-        for conv in sorted(self.conversations.values(),
+        with self._lock:
+            snapshot = list(self.conversations.values())
+        for conv in sorted(snapshot,
                            key=lambda c: c.get("updated") or 0, reverse=True):
             title = conv.get("title") or "新对话"
             title_hit = needle in title.lower()
@@ -156,17 +168,23 @@ class WebChatServer:
         return {"items": hits}
 
     def conversation_list(self):
-        items = sorted(self.conversations.values(),
-                       key=lambda c: c.get("updated") or 0, reverse=True)
-        return [{"id": c["id"], "title": c.get("title") or "新对话",
-                 "updated": c.get("updated") or 0,
-                 "count": len(c.get("messages") or [])}
-                for c in items]
+        with self._lock:
+            items = sorted(self.conversations.values(),
+                           key=lambda c: c.get("updated") or 0, reverse=True)
+            return [{"id": c["id"],
+                     "title": c.get("title") or "新对话",
+                     "updated": c.get("updated") or 0,
+                     "count": len(c.get("messages") or [])}
+                    for c in items]
 
     def _save_conversations(self):
         """原子写入；单个会话也做条数裁剪。"""
+        with self._lock:
+            self._save_conversations_locked()
+
+    def _save_conversations_locked(self):
         payload = {"conversations": {}}
-        for cid, conv in self.conversations.items():
+        for cid, conv in list(self.conversations.items()):
             messages = []
             for message in (conv.get("messages") or [])[-MAX_HISTORY:]:
                 messages.append({
@@ -174,7 +192,7 @@ class WebChatServer:
                     "content": message.get("content") or "",
                     "reasoning": message.get("reasoning") or "",
                     "sources": message.get("sources") or [],
-                "streaming": bool(message.get("streaming")),
+                    "streaming": bool(message.get("streaming")),
                     "texts": message.get("texts") or [],
                     "images": [],
                 })
@@ -373,7 +391,9 @@ class WebChatServer:
 
     # ------------------------------------------------------------ 业务
     def config(self):
-        return self.controller.web_config()
+        cfg = self.controller.web_config()
+        cfg["reasoning"] = self.reasoning
+        return cfg
 
     def handle_chat(self, handler):
         try:
@@ -382,8 +402,6 @@ class WebChatServer:
             return self._send_text(handler, 400, "invalid json")
 
         text = (payload.get("message") or "").strip()
-        if not text:
-            return self._send_text(handler, 400, "empty message")
 
         cfg = self.controller.web_config()
         if not cfg.get("ready"):
@@ -391,6 +409,10 @@ class WebChatServer:
 
         query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
         conv = self.get_conversation(query.get("conv", [""])[0])
+
+        # 校验必须放在发响应头之前，否则 400 会写在 200 的头上（客户端会当成成功）
+        if not text and not (self.attachments.get(conv["id"]) or []):
+            return self._send_text(handler, 400, "empty message")
 
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -411,20 +433,22 @@ class WebChatServer:
                  for a in pending if a["kind"] == "text"]
         images = [a.get("data_url") for a in pending
                   if a["kind"] == "image"]
-        conv["messages"].append({"role": "user", "content": text,
-                                 "texts": texts, "images": images})
-        conv["updated"] = time.time()
-        if not conv.get("title") or conv["title"] == "新对话":
-            conv["title"] = self._auto_title(conv["messages"])
-        self._save_conversations()
+        with self._lock:
+            conv["messages"].append({"role": "user", "content": text,
+                                     "texts": texts, "images": images})
+            conv["updated"] = time.time()
+            if not conv.get("title") or conv["title"] == "新对话":
+                conv["title"] = self._auto_title(conv["messages"])
+            self._save_conversations()
 
         messages = self._build_messages(conv)
 
         # 先把「正在生成」的空回答写进会话：这样切换对话、刷新页面都能看到它
         assistant = {"role": "assistant", "content": "", "reasoning": "",
                      "sources": [], "streaming": True}
-        conv["messages"].append(assistant)
-        self._save_conversations()
+        with self._lock:
+            conv["messages"].append(assistant)
+            self._save_conversations()
         self._active += 1
 
         final = {"content": "", "reasoning": "", "sources": []}
@@ -448,13 +472,14 @@ class WebChatServer:
             if not force and now - last_save < 0.8:
                 return
             last_save = now
-            assistant["content"] = final["content"]
-            assistant["reasoning"] = final["reasoning"]
-            assistant["sources"] = final["sources"]
-            conv["updated"] = now
-            self._save_conversations()
+            with self._lock:
+                assistant["content"] = final["content"]
+                assistant["reasoning"] = final["reasoning"]
+                assistant["sources"] = final["sources"]
+                conv["updated"] = now
+                self._save_conversations()
 
-        stream = self.controller.web_stream(messages)
+        stream = self.controller.web_stream(messages, reasoning=self.reasoning)
         try:
             for kind, data in stream:
                 if kind == "chunk":
@@ -485,16 +510,17 @@ class WebChatServer:
         finally:
             stream.close()                         # 触发 worker 清理
 
-        if final["content"] or final["reasoning"]:
-            assistant["content"] = final["content"]
-            assistant["reasoning"] = final["reasoning"]
-            assistant["sources"] = final["sources"]
-            assistant.pop("streaming", None)
-            conv["updated"] = time.time()
-        else:
-            # 什么都没生成出来（比如被立刻取消），别留一个空气泡
-            conv["messages"] = [m for m in conv["messages"] if m is not assistant]
-        self._save_conversations()
+        with self._lock:
+            if final["content"] or final["reasoning"]:
+                assistant["content"] = final["content"]
+                assistant["reasoning"] = final["reasoning"]
+                assistant["sources"] = final["sources"]
+                assistant.pop("streaming", None)
+                conv["updated"] = time.time()
+            else:
+                # 什么都没生成出来（比如被立刻取消），别留一个空气泡
+                conv["messages"] = [m for m in conv["messages"] if m is not assistant]
+            self._save_conversations()
 
         self._active = max(0, self._active - 1)
         emit("done", {"ok": True})
@@ -569,6 +595,16 @@ class WebChatServer:
             return self._send_text(handler, 400, "invalid json")
         search = payload.get("search")
         thinking = payload.get("thinking")
+        reasoning = payload.get("reasoning")
+
+        supported = self.controller.web_config().get("reasoning_supported", True)
+        if not supported:
+            reasoning = None            # 模型不支持，直接忽略
+        if reasoning in ("off", "low", "medium", "high"):
+            self.reasoning = reasoning
+            # 同步桌面端复选框，保持两端口径一致
+            thinking = reasoning != "off"
+
         self.controller.apply_web_settings(search=search, thinking=thinking)
 
         cfg = self.controller.web_config()
@@ -576,6 +612,7 @@ class WebChatServer:
             cfg["search"] = bool(search)
         if thinking is not None:
             cfg["thinking"] = bool(thinking)
+        cfg["reasoning"] = self.reasoning
         return self._send_json(handler, cfg)
 
     def handle_delete(self, handler):
@@ -648,10 +685,11 @@ class WebChatServer:
             return self._send_text(handler, 400, "invalid json")
 
         removed = 0
-        for cid in ids:
-            if cid in self.conversations:
-                self.conversations.pop(cid, None)
-                removed += 1
+        with self._lock:
+            for cid in ids:
+                if cid in self.conversations:
+                    self.conversations.pop(cid, None)
+                    removed += 1
 
         if not self.conversations:
             self.create_conversation()
@@ -668,11 +706,12 @@ class WebChatServer:
         except ValueError:
             return self._send_text(handler, 400, "invalid json")
 
-        if cid in self.conversations:
-            self.conversations.pop(cid, None)
-            for item in self.attachments.pop(cid, []):
-                attach_mod.delete_stored(item.get("path"))
-            self._save_conversations()
+        with self._lock:
+            if cid in self.conversations:
+                self.conversations.pop(cid, None)
+                for item in self.attachments.pop(cid, []):
+                    attach_mod.delete_stored(item.get("path"))
+                self._save_conversations()
 
         if not self.conversations:
             self.create_conversation()

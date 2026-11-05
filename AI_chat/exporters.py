@@ -7,7 +7,6 @@
 - docx：手写 OOXML（docx 本质是 zip + XML）
 """
 
-import io
 import json
 import pathlib
 import re
@@ -20,11 +19,10 @@ import fonts
 import requests
 from formulas import FormulaRenderer
 from PySide6.QtCore import QBuffer, QByteArray, QMarginsF, QRectF, QSizeF, Qt, QUrl
-from PySide6.QtGui import (QColor, QFont, QImage, QPageLayout, QPageSize,
-                           QPainter, QPdfWriter, QTextBlockFormat,
-                           QTextCharFormat, QTextCursor, QTextDocument,
+from PySide6.QtGui import (QColor, QFont, QImage, QPageSize, QPainter,
+                           QPdfWriter, QTextCursor, QTextDocument,
                            QTextFormat, QTextImageFormat, QTextLength,
-                           QTextTable, QTextTableFormat)
+                           QTextTable)
 from PySide6.QtPrintSupport import QPrinter  # noqa: F401  (保证 QtPrintSupport 被加载)
 
 
