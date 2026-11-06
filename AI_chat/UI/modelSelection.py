@@ -54,7 +54,6 @@ class Ui_ModelDialog(object):
         self.empty_label.setObjectName(u"empty_label")
         self.empty_label.setEnabled(True)
         self.empty_label.setMinimumSize(QSize(0, 17))
-        self.empty_label.setStyleSheet(u"color: #6b7280; font-size: 12px;")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignLeading|Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter)
 
         self.verticalLayout.addWidget(self.empty_label)

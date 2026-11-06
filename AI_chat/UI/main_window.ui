@@ -622,6 +622,43 @@
           <item>
            <layout class="QVBoxLayout" name="verticalLayout_8">
             <item>
+             <layout class="QHBoxLayout" name="theme_row">
+              <item>
+               <widget class="QLabel" name="theme_mode_label">
+                <property name="text">
+                 <string>界面主题</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="theme_mode_combo">
+                <property name="minimumSize">
+                 <size>
+                  <width>140</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="toolTip">
+                 <string>「跟随系统」会在 macOS 切换明暗时实时跟着变</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="theme_row_spacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            <item>
              <widget class="QCheckBox" name="capability_prompt_check">
               <property name="toolTip">
                <string>开启后，无论系统提示词怎么写，都会自动附加公式、图表、配图、引用等客户端能力说明</string>

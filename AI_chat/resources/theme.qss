@@ -310,3 +310,93 @@ QListWidget::item:selected {
     background: #e8f1ff;
     color: #1f2328;
 }
+
+/* ---------- 滚动区域 ---------- */
+/* 配置页和个性化页都包在 QScrollArea 里。这里不写背景的话，视口会跟着
+   系统配色走——深色模式下就是黑底配上面的黑字，整页直接看不见。 */
+QScrollArea {
+    background: #f5f6f8;
+    border: none;
+}
+
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+
+/* ---------- 右键菜单 ---------- */
+/* 输入框的撤销/粘贴菜单同理：不设 QSS 就走原生深色，和上面的黑字撞车。 */
+QMenu {
+    background: #ffffff;
+    border: 1px solid #d9dee5;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 5px 22px 5px 12px;
+    border-radius: 6px;
+}
+
+QMenu::item:selected {
+    background: #e8f1ff;
+    color: #1f2328;
+}
+
+QMenu::item:disabled {
+    color: #a8b0ba;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #ececec;
+    margin: 4px 6px;
+}
+
+QMenu::indicator {
+    width: 14px;
+    height: 14px;
+}
+
+/* ---------- 按 objectName 定制的几处 ---------- */
+/* 模型选择弹窗的列表（原来这段写死在 model_dialog.py 里） */
+QListWidget#model_list::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #c9ced6;
+    border-radius: 4px;
+    background: #ffffff;
+}
+
+QListWidget#model_list::indicator:checked {
+    background: #0a84ff;
+    border-color: #0a84ff;
+    image: url("@RES@/check.svg");
+}
+
+QListWidget#model_list::item {
+    padding-left: 8px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+}
+
+/* 模型列表为空时的提示文字 */
+QLabel#empty_label {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+/* 待发送附件的 chip，点一下移除（原来写死在 app.py 里） */
+QPushButton#attach_chip {
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    padding: 2px 10px;
+    background: #f6f8fa;
+    font-size: 12px;
+    color: #1f2328;
+}
+
+QPushButton#attach_chip:hover {
+    background: #ffecec;
+    border-color: #f0b8b8;
+    color: #b42318;
+}

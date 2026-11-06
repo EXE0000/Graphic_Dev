@@ -19,8 +19,78 @@ permissions:
   contents: read
 
 jobs:
+  # ------------------------------------------------------------------
+  # 前置校验：几秒钟跑完，把「根本不该进入打包」的问题挡在三平台矩阵之前。
+  # 这三条都是本仓库的硬约束，坏了的话打包能成功、跑起来才炸，最难查。
+  # ------------------------------------------------------------------
+  checks:
+    name: 前置校验
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python 语法编译
+        run: python -m compileall -q AI_chat
+
+      # 红线：外壳 HTML 必须与 material/STARTY.html 逐字节一致，
+      # 网页端所有功能只能靠 app.js/app.css 的外挂层实现。
+      - name: 校验外壳 HTML 未被改动
+        run: |
+          set -e
+          cmp AI_chat/web/starty.html material/STARTY.html
+          echo "OK starty.html 与 material/STARTY.html 一致"
+
+      - name: 校验前端脚本语法
+        run: |
+          set -e
+          for f in AI_chat/web/js/app.js AI_chat/web/js/chat.js AI_chat/web/js/webchat.js; do
+            node --check "$f" && echo "OK $f"
+          done
+
+      # 两套主题各引用一批 svg/svg 图标；路径写错不报错，只是运行时图标不见了
+      - name: 校验主题与图标引用
+        run: |
+          set -e
+          python - <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path("AI_chat/resources")
+          bad = []
+          for name in ("theme.qss", "theme_dark.qss"):
+              path = root / name
+              if not path.is_file():
+                  sys.exit("缺少主题文件：%s" % name)
+              text = path.read_text(encoding="utf-8")
+              if "@RES@" not in text:
+                  sys.exit("%s 丢了 @RES@ 占位符，打包后图标会全部失效" % name)
+              for ref in re.findall(r'url\("@RES@/([^"]+)"\)', text):
+                  if not (root / ref).is_file():
+                      bad.append("%s -> %s" % (name, ref))
+          if bad:
+              sys.exit("QSS 引用了不存在的文件：\n  " + "\n  ".join(bad))
+          print("OK 明暗两套主题与引用的图标都在")
+          PY
+
+      # 密钥只应该待在系统钥匙串里（AI_chat/secrets_store.py），不进仓库
+      - name: 扫描误提交的密钥
+        run: |
+          if git grep -nEI \
+              'sk-[A-Za-z0-9]{18,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}' \
+              -- AI_chat docs; then
+            echo "❌ 上面这些行像真实密钥：请改用客户端的密钥库，并把它们从历史里清掉再推。"
+            exit 1
+          fi
+          echo "OK 未见疑似密钥"
+
   build:
     name: ${{ matrix.label }}
+    needs: checks            # 前置校验没过就别浪费三平台的额度
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -68,13 +138,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 运行时装的是 UI/*.py（pyside6-uic 生成物），只改 .ui 忘了重新生成的话，
+      # 打包照样成功但界面还是旧的——这一步把这种改动挡在出包之前。
+      - name: 校验 .ui 与生成代码同步
+        shell: bash
+        run: |
+          set -e
+          for ui in AI_chat/UI/*.ui; do
+            base=$(basename "$ui" .ui)
+            pyside6-uic "$ui" -o "/tmp/$base.py"
+            if ! diff -q "/tmp/$base.py" "AI_chat/UI/$base.py" >/dev/null; then
+              echo "❌ $ui 改过但 $base.py 没重新生成，差异如下："
+              diff "/tmp/$base.py" "AI_chat/UI/$base.py" | head -40
+              exit 1
+            fi
+            echo "OK $base.py 与 .ui 同步"
+          done
+
       - name: PyInstaller 构建
         id: build
         run: pyinstaller AI_chat.spec --noconfirm --clean
 
       # ---- 产物校验：确认主程序和 WebEngine 组件都打进去了 ----
       - name: 校验产物（Windows）
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: bash
         run: |
           set -e
@@ -84,7 +171,7 @@ jobs:
           find dist/AI_chat -iname 'icudtl.dat' | grep -q . && echo "OK icudtl.dat"
 
       - name: 校验产物（Linux）
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && steps.build.outcome == 'success'
         run: |
           set -e
           test -x "dist/AI_chat/AI_chat" && echo "OK 主程序 AI_chat"
@@ -93,12 +180,26 @@ jobs:
           find dist/AI_chat -name 'icudtl.dat' | grep -q . && echo "OK icudtl.dat"
 
       - name: 校验产物（macOS）
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.build.outcome == 'success'
         run: |
           set -e
           test -x "dist/AI Chat.app/Contents/MacOS/AI_chat" && echo "OK 主程序 .app"
           find "dist/AI Chat.app" -name 'QtWebEngineProcess' | grep -q . && echo "OK QtWebEngineProcess"
           find "dist/AI Chat.app" -name 'qtwebengine_resources*.pak' | grep -q . && echo "OK WebEngine 资源 .pak"
+
+      # 随包资源用 find 定位：三平台的内部目录布局不一样（_internal/、
+      # Contents/Resources/），写死路径的校验会在某个平台上假失败。
+      # 缺主题/缺外壳 HTML 的表现是"包能跑但界面是坏的"，最难从错误日志追。
+      - name: 校验随包资源（主题 / 网页端 / KaTeX）
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -e
+          for name in theme.qss theme_dark.qss chevron-down.svg chevron-down-dark.svg \
+                      starty.html chat.html webchat.html app.js katex.min.js katex.min.css; do
+            find dist -name "$name" | grep -q . || { echo "❌ 包里没有 $name"; exit 1; }
+            echo "OK $name"
+          done
 
       # ---- 打包成单个归档，方便下载（先打包上传，再做冒烟测试，
       #      这样即使冒烟失败，产物也已可供下载排查）----
@@ -124,7 +225,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ---- Linux 无头启动冒烟：进程能存活即视为启动正常 ----
+      # ---- 无头启动冒烟：进程能存活即视为启动正常 ----
       # offscreen 模式下 WebEngine 会刷一堆 Skia/GPU 报错，那是无头渲染的正常噪音，
       # 判定标准是"进程是否存活"，不是"有没有 stderr 输出"。
       - name: 启动冒烟测试（Linux offscreen）
@@ -141,4 +242,58 @@ jobs:
             echo "FAIL 进程提前退出，日志如下："
             cat /tmp/run.log
             exit 1
+          fi
+
+      # macOS 同样用 offscreen 跑，不连窗口服务器；产物是 .app，要直接执行里面的二进制。
+      # 要是这一步在 runner 上表现不稳，删掉即可，产物校验和上传都已经先跑完了。
+      - name: 启动冒烟测试（macOS offscreen）
+        if: runner.os == 'macOS' && steps.build.outcome == 'success'
+        run: |
+          QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 \
+          QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
+            "dist/AI Chat.app/Contents/MacOS/AI_chat" > /tmp/run.log 2>&1 &
+          PID=$!
+          sleep 20
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "OK .app 进程存活 20s，启动正常"
+            kill "$PID" 2>/dev/null || true
+          else
+            echo "FAIL .app 提前退出，日志如下："
+            tail -80 /tmp/run.log
+            exit 1
+          fi
+      # Windows 无头会话里起 GUI 进程不稳，冒烟只做产物与资源校验；
+      # 真机验证按 docs/CI_BUILD.md 第三节走。
+
+  # ------------------------------------------------------------------
+  # 只有推 v* 标签时才发 Release：三平台产物上传完（build 全绿）才挂出去，
+  # 任何一个平台失败这个 job 就跳过，不会发出半个版本。
+  # ------------------------------------------------------------------
+  release:
+    name: 发 GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write          # 写权限只给这一个 job，build/checks 仍是只读
+    steps:
+      - name: 下载三平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+
+      # 同名标签重复推（改代码后重打同一个 tag）时不报错，覆盖同名文件即可
+      - name: 创建或补全 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          ls -lh release-files/*/*
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖上传同名产物"
+            gh release upload "$TAG" release-files/*/* --clobber
+          else
+            gh release create "$TAG" release-files/*/* --title "$TAG" --generate-notes
           fi

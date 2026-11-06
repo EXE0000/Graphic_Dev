@@ -78,9 +78,6 @@
          <height>17</height>
         </size>
        </property>
-       <property name="styleSheet">
-        <string notr="true">color: #6b7280; font-size: 12px;</string>
-       </property>
        <property name="text">
         <string>「没有匹配的模型」</string>
        </property>

@@ -1,0 +1,55 @@
+# ============================================================
+# 换行符与文件类型策略
+#
+# 为什么必须写这个文件：本仓库有两个「按字节比对」的硬约束——
+#   1) AI_chat/web/starty.html 必须和 material/STARTY.html 逐字节一致；
+#   2) AI_chat/UI/*.ui 改动后要重新生成同名 *.py。
+# 而 Git 在 Windows 上默认可能配了 core.autocrlf=true，签出时把 LF
+# 换成 CRLF，于是上面两条在 Windows 机器/CI 上会「凭空」不一致，
+# diff 也会整篇变红。这里统一强制 LF，杜绝这类假改动。
+# ============================================================
+
+# 默认：能识别为文本的文件在仓库内存 LF，签出也保持 LF（不做平台转换）
+* text=auto eol=lf
+
+# ------------------------------------------------------------ 文本：显式声明，
+# 免得 Git 猜错类型（QSS/XML 这类不常见的扩展名容易被当成二进制）
+*.py      text eol=lf
+*.spec    text eol=lf
+*.ui      text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.qss     text eol=lf
+*.js      text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.txt     text eol=lf
+*.svg     text eol=lf
+.gitignore   text eol=lf
+.gitattributes text eol=lf
+
+# ------------------------------------------------------------ 二进制：显式标记
+# Git 会凭内容猜测，字体/图片一旦猜成文本就会在签出时被改写字节，
+# 打包后才发现资源损坏，所以逐个钉死。
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.pdf   binary
+*.ttf   binary
+*.otf   binary
+*.ttc   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
+*.dmg   binary
+*.exe   binary
+*.dll   binary
+*.dylib binary
+*.so    binary
+*.pak   binary
+*.dat   binary

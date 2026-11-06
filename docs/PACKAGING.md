@@ -120,11 +120,20 @@ PDF 附件、导出、文生图、重启保留配置）。
 | [requirements.txt](../requirements.txt) | 锁定版本的依赖（含 pyinstaller） |
 | [app_paths.py](../AI_chat/app_paths.py) | `resource_dir()` 处理 frozen 后的资源路径；用户数据写系统目录 |
 | [app.py](../AI_chat/app.py) `_fix_webengine_paths()` | macOS WebEngine 路径自愈 |
+| [theme.py](../AI_chat/theme.py) | 明暗主题引擎：按 `@RES@` 拼资源路径加载 QSS + 调色板，缺文件时静默跳过 |
 | [fonts.py](../AI_chat/fonts.py) | 启动注册随包字体（Linux CJK 尤其需要） |
 | [secrets_store.py](../AI_chat/secrets_store.py) | 系统钥匙串 + 文件回退 |
+| [.gitattributes](../.gitattributes) | 换行符策略：仓库与签出一律 LF，字体/图片显式标 binary |
+| [.github/workflows/build.yml](../.github/workflows/build.yml) | 前置校验 + 三平台打包（详见 [CI_BUILD.md](CI_BUILD.md) 第五节） |
 
-随包资源（spec 的 `datas`）：`AI_chat/web`（chat.html/css/js/KaTeX）、
-`AI_chat/resources`（theme.qss、SVG、可选 fonts）、certifi 证书。
+随包资源（spec 的 `datas`）：`AI_chat/web`（starty.html / chat.html / css / js / vendor KaTeX）、
+`AI_chat/resources`（theme.qss、theme_dark.qss、SVG、可选 fonts）、certifi 证书。
+新增资源放进这两个目录就会被整目录带走，不用改 spec；但 CI 的「校验随包资源」
+一步会盯住关键文件，改名或漏放会在那里报出来。
+
+> `.gitattributes` 为什么必要：`starty.html` 与 `material/STARTY.html` 要逐字节一致，
+> 而 Windows 机器上 `core.autocrlf=true` 会在签出时把 LF 改成 CRLF，让这条比对
+> 和 `.ui`/生成物比对在 Windows 上凭空失败。
 
 用户数据（附件、图片、缓存）**不进包**，写系统数据目录：
 

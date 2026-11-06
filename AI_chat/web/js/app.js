@@ -322,11 +322,41 @@
     if (stick) scrollBottom();
     return { msg: msg, col: col, body: body };
   }
+  // 附件 chip：点击让客户端调用系统默认应用预览（浏览器自己碰不到本地文件）。
+  // ref 只是定位符：待发送用 {pending: 下标}，历史消息用 {src, i} + 所在消息的 data-index。
+  function attachChip(text, openable, ref) {
+    var chip = el("span", "file-chip", text);
+    if (!openable) return chip;              // 旧记录没留副本，点了也打不开
+    chip.classList.add("file-chip--open");
+    chip.title = "点击用系统默认应用打开";
+    chip.addEventListener("click", function () { openAttachment(chip, ref); });
+    return chip;
+  }
+  function openAttachment(chip, ref) {
+    var body = {};
+    if (ref.pending != null) {
+      body.pending = ref.pending;
+    } else {
+      var msg = chip.closest(".msg");
+      var raw = msg ? msg.getAttribute("data-index") : null;
+      if (raw == null || raw === "") { toast("这条消息还在跟服务端同步，稍后再点"); return; }
+      body.index = Number(raw); body.src = ref.src; body.i = ref.i;
+    }
+    postRaw("/api/open", body).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { toast(t || "打开附件失败"); });
+      return r.json().then(function (d) {
+        toast("已用系统默认应用打开 " + (d.name || "附件"));
+      });
+    }).catch(function () { toast("客户端没有响应，确认它还开着再试"); });
+  }
   function appendFiles(body, items) {
     if (!items || !items.length) return;
     var box = el("div", "msg__files");
     items.forEach(function (a) {
-      box.appendChild(el("span", "file-chip", (a.kind === "image" ? "🖼 " : "📄 ") + (a.name || "")));
+      box.appendChild(attachChip((a.kind === "image" ? "🖼 " : "📄 ") + (a.name || ""),
+                                 a.openable !== false,
+                                 { src: a.src || "files",
+                                   i: a.i != null ? a.i : a.id }));
     });
     body.parentNode.appendChild(box);
   }
@@ -907,10 +937,12 @@
     pendingItems = items || [];
     Array.prototype.forEach.call(fileStrip.querySelectorAll(".file-chip"), function (c) { c.remove(); });
     pendingItems.forEach(function (item) {
-      var chip = el("span", "file-chip");
-      chip.appendChild(document.createTextNode((item.kind === "image" ? "🖼 " : "📄 ") + item.name));
+      var chip = attachChip((item.kind === "image" ? "🖼 " : "📄 ") + item.name,
+                            item.openable !== false, { pending: item.id });
       var del = el("button", "file-chip__del", "✕"); del.type = "button"; del.title = "移除";
-      del.addEventListener("click", function () {
+      // 阻止冒泡：否则点 ✕ 会顺带触发 chip 上的「用系统应用打开」
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
         postJSON("/api/attachments/remove", { id: item.id })
           .then(function (d) { renderPending(d.items); }).catch(function () {});
       });

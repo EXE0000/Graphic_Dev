@@ -407,6 +407,8 @@ class WebChatServer:
             return self._send_json(handler, {"items": []})
         if parsed.path == "/api/attachments/remove":
             return self.handle_remove_attachment(handler)
+        if parsed.path == "/api/open":
+            return self.handle_open(handler)
         if parsed.path == "/api/reset":
             conv = self.get_conversation(query.get("conv", [""])[0])
             conv["messages"] = []
@@ -618,12 +620,19 @@ class WebChatServer:
 
     @staticmethod
     def _public_attachments(message):
-        """历史消息的附件摘要：优先用 files（含图片），回退到 texts。"""
+        """历史消息的附件摘要：优先用 files（含图片），回退到 texts。
+
+        src + i 是给 /api/open 用的定位符：前端只说「第几条消息的第几个附件」，
+        真实路径留在服务端。texts 是当年没留副本的旧记录，打不开。
+        """
         files = message.get("files") or []
         if files:
-            return [{"name": f.get("name"), "kind": f.get("kind")} for f in files]
-        return [{"name": t.get("name"), "kind": "text"}
-                for t in (message.get("texts") or [])]
+            return [{"name": f.get("name"), "kind": f.get("kind"),
+                     "src": "files", "i": i, "openable": bool(f.get("path"))}
+                    for i, f in enumerate(files)]
+        return [{"name": t.get("name"), "kind": "text",
+                 "src": "texts", "i": i, "openable": False}
+                for i, t in enumerate(message.get("texts") or [])]
 
     def handle_setting(self, handler):
         try:
@@ -786,8 +795,9 @@ class WebChatServer:
         return self.attachments.setdefault(cid, [])
 
     def _attachment_public(self, cid):
+        """待发送附件的摘要；id 就是 /api/open 用的下标。"""
         return [{"id": i, "name": a["name"], "kind": a["kind"],
-                 "size": a.get("size", 0)}
+                 "size": a.get("size", 0), "openable": bool(a.get("path"))}
                 for i, a in enumerate(self._att(cid))]
 
     def handle_upload(self, handler):
@@ -851,6 +861,60 @@ class WebChatServer:
             item = bucket.pop(index)
             attach_mod.delete_stored(item.get("path"))
         return self._send_json(handler, {"items": self._attachment_public(conv["id"])})
+
+    def handle_open(self, handler):
+        """点击附件 chip → 让客户端用系统默认应用打开那个附件副本。
+
+        路径一律从服务端记录里取：前端只给「哪个会话、第几条消息、第几个附件」
+        或者待发送列表的下标，不接受任意路径；再校验一次必须落在数据目录里，
+        免得这个接口被拿来打开机器上的其他文件。
+        """
+        try:
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+        except ValueError:
+            return self._send_text(handler, 400, "invalid json")
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        conv = self.get_conversation(query.get("conv", [""])[0] or
+                                     str(payload.get("conv") or ""))
+
+        pending = payload.get("pending")
+        if pending is not None:
+            try:
+                slot = int(pending)
+            except (TypeError, ValueError):
+                return self._send_text(handler, 400, "参数无效")
+            bucket = self._att(conv["id"])
+            if not (0 <= slot < len(bucket)):
+                return self._send_text(handler, 400, "附件已经不在待发送列表里了")
+            path = bucket[slot].get("path") or ""
+        else:
+            try:
+                index = int(payload.get("index"))
+                slot = int(payload.get("i"))
+            except (TypeError, ValueError):
+                return self._send_text(handler, 400, "参数无效")
+            messages = conv["messages"]
+            if not (0 <= index < len(messages)):
+                return self._send_text(handler, 400, "这条消息已经不在了")
+            key = "texts" if str(payload.get("src")) == "texts" else "files"
+            bucket = messages[index].get(key) or []
+            if not (0 <= slot < len(bucket)):
+                return self._send_text(handler, 400, "附件不存在")
+            path = bucket[slot].get("path") or ""
+            if not path:
+                return self._send_text(handler, 400, "这条旧记录没存附件副本，打不开")
+
+        target = pathlib.Path(path)
+        if not target.is_file():
+            return self._send_text(handler, 400, "附件副本已不存在（可能过期被清理）")
+        root = pathlib.Path(DATA_DIR).resolve() if DATA_DIR else None
+        if root is None or root not in target.resolve().parents:
+            return self._send_text(handler, 403, "只允许打开客户端自己的附件")
+
+        if not self.controller.open_local_file(str(target)):
+            return self._send_text(handler, 400, "系统没能打开这个文件")
+        return self._send_json(handler, {"ok": True, "name": target.name})
 
     # ------------------------------------------------------------ 导出
     def handle_export(self, handler):

@@ -18,25 +18,7 @@ class ModelPickerDialog(QDialog, Ui_ModelDialog):
             self.clear_btn.hide()
             self.ok_btn.setText("选择")
 
-        self.model_list.setStyleSheet("""
-            QListView::indicator {
-                width: 16px;
-                height: 16px;
-                border: 1px solid #c9ced6;
-                border-radius: 4px;
-                background: #ffffff;
-            }
-            QListView::indicator:checked {
-                background: #0a84ff;
-                border-color: #0a84ff;
-            }
-            QListView::item {
-                padding-left: 8px;
-                padding-top: 2px;
-                padding-bottom: 2px;
-            }
-        """)
-
+        # 勾选框样式走 QSS 里的 QListWidget#model_list：写在这里会盖掉主题。
         self._fill(models)
 
         self.search_edit.textChanged.connect(self._filter)

@@ -1,0 +1,31 @@
+# ============================================================
+# Dependabot 版本提醒
+#
+# 本仓库的依赖是**刻意锁死**的（requirements.txt 用 ==），因为
+# PySide6 一升级就可能重新踩 WebEngine 打包坑。所以这里只让它开 PR
+# 提醒，不自动合并；PR 数量也压到很低，避免每周刷屏。
+# 合并前请在三平台各跑一次打包冒烟（docs/CI_BUILD.md）。
+# ============================================================
+version: 2
+
+updates:
+  # Actions 版本（checkout / setup-python / upload-artifact 等）
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - ci
+    commit-message:
+      prefix: chore
+
+  # Python 依赖
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore

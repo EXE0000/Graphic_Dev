@@ -371,6 +371,26 @@ class Ui_MainWindow(object):
         self.verticalLayout_9.setContentsMargins(16, 16, 16, 16)
         self.verticalLayout_8 = QVBoxLayout()
         self.verticalLayout_8.setObjectName(u"verticalLayout_8")
+        self.theme_row = QHBoxLayout()
+        self.theme_row.setObjectName(u"theme_row")
+        self.theme_mode_label = QLabel(self.page_personalize)
+        self.theme_mode_label.setObjectName(u"theme_mode_label")
+
+        self.theme_row.addWidget(self.theme_mode_label)
+
+        self.theme_mode_combo = QComboBox(self.page_personalize)
+        self.theme_mode_combo.setObjectName(u"theme_mode_combo")
+        self.theme_mode_combo.setMinimumSize(QSize(140, 0))
+
+        self.theme_row.addWidget(self.theme_mode_combo)
+
+        self.theme_row_spacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.theme_row.addItem(self.theme_row_spacer)
+
+
+        self.verticalLayout_8.addLayout(self.theme_row)
+
         self.capability_prompt_check = QCheckBox(self.page_personalize)
         self.capability_prompt_check.setObjectName(u"capability_prompt_check")
         self.capability_prompt_check.setChecked(True)
@@ -468,6 +488,10 @@ class Ui_MainWindow(object):
 #endif // QT_CONFIG(tooltip)
         self.clear_config_button.setText(QCoreApplication.translate("MainWindow", u"\u6e05\u7a7a\u6240\u6709\u914d\u7f6e", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.page_api_config), QCoreApplication.translate("MainWindow", u"API \u914d\u7f6e", None))
+        self.theme_mode_label.setText(QCoreApplication.translate("MainWindow", u"\u754c\u9762\u4e3b\u9898", None))
+#if QT_CONFIG(tooltip)
+        self.theme_mode_combo.setToolTip(QCoreApplication.translate("MainWindow", u"\u300c\u8ddf\u968f\u7cfb\u7edf\u300d\u4f1a\u5728 macOS \u5207\u6362\u660e\u6697\u65f6\u5b9e\u65f6\u8ddf\u7740\u53d8", None))
+#endif // QT_CONFIG(tooltip)
 #if QT_CONFIG(tooltip)
         self.capability_prompt_check.setToolTip(QCoreApplication.translate("MainWindow", u"\u5f00\u542f\u540e\uff0c\u65e0\u8bba\u7cfb\u7edf\u63d0\u793a\u8bcd\u600e\u4e48\u5199\uff0c\u90fd\u4f1a\u81ea\u52a8\u9644\u52a0\u516c\u5f0f\u3001\u56fe\u8868\u3001\u914d\u56fe\u3001\u5f15\u7528\u7b49\u5ba2\u6237\u7aef\u80fd\u529b\u8bf4\u660e", None))
 #endif // QT_CONFIG(tooltip)

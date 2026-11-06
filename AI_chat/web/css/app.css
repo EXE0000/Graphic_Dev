@@ -300,6 +300,11 @@
 }
 .file-chip__del:hover { color: #fff; }
 
+/* ---------- 附件 chip：可预览时才能点，点击后由客户端调系统默认应用 ---------- */
+.file-chip--open { cursor: pointer; }
+/* 用 filter 提亮而不是写死颜色：chip 底色来自壳子的 --chip，跟随壳子配色走 */
+.file-chip--open:hover { filter: brightness(1.3); }
+
 /* ---------- 侧边栏收起 / 展开 ---------- */
 body.sidebar-collapsed .sidebar { display: none; }
 

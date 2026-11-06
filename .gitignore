@@ -22,7 +22,11 @@ ENV/
 .ruff_cache/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
+.tox/
+pip-wheel-metadata/
+*.egg
 
 # ============================================================
 # 打包产物（macOS / Windows / Linux）
@@ -53,15 +57,19 @@ htmlcov/
 # ============================================================
 # 运行时数据
 # 正常情况下写到系统数据目录（见 AI_chat/app_paths.py），
-# 但数据目录不可写时会回退到当前目录，这里兜底忽略。
+# 但数据目录不可写时会回退到当前目录（也就是项目根），这里兜底忽略。
+#
+# 目录类规则必须用前导 / 锚定到项目根：不写 / 的话 `images/` 会匹配
+# 任意层级的同名目录，把 docs/images/ 这类正经资源静默吞掉——
+# 表现是 git status 干干净净、GitHub 上 README 的图全是裂的。
 # ============================================================
-web_history.json
-web_conversations.json
-chat_history.json
-search_cache.json
-attachments/
-images/
-cache/
+/web_history.json
+/web_conversations.json
+/chat_history.json
+/search_cache.json
+/attachments/
+/images/
+/cache/
 
 # 临时目录（LibreOffice 预览、测试导出等）
 .dsh-office.*/
@@ -91,8 +99,12 @@ AI_chat/resources/fonts/*.ttc
 # ============================================================
 .DS_Store
 ._*
+.AppleDouble
+.Trashes
 Thumbs.db
+ehthumbs.db
 desktop.ini
+$RECYCLE.BIN/
 
 # ============================================================
 # 本地配置与日志
@@ -103,6 +115,14 @@ desktop.ini
 *.log
 
 # ============================================================
+# 合并 / 备份残留
+# 三平台 CI + 多台机器协作时容易留下这类文件，误提交会污染历史
+# ============================================================
+*.orig
+*.rej
+*.bak
+
+# ============================================================
 # 说明：以下文件**故意不忽略**
 #
 #   AI_chat.spec                     打包配置，属于源码
@@ -110,6 +130,7 @@ desktop.ini
 #   AI_chat/UI/main_window.py        pyside6-uic 生成，但运行时必需；
 #   AI_chat/UI/modelSelection.py     不提交会导致克隆后直接跑不起来
 #   AI_chat/web/vendor/              KaTeX / marked 前端依赖，需随包分发
+#   .gitattributes                   换行符策略：跨平台签出必须字节一致，属于源码
 #
 # 修改 .ui 后记得重新生成：
 #   cd AI_chat/UI && ../../.venv/bin/pyside6-uic main_window.ui -o main_window.py

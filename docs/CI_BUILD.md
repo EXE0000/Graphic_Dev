@@ -37,7 +37,7 @@
 git remote add github https://github.com/<你的用户名>/graphic_dev.git
 
 # 提交本次新增的 workflow 和文档
-git add .github/ docs/ AI_chat.spec AI_chat/app.py requirements.txt .gitignore
+git add README.md .gitignore .gitattributes .github/ docs/ AI_chat.spec AI_chat/app.py requirements.txt
 git commit -m "ci: 三平台 GitHub Actions 自动打包 + 打包文档"
 
 # 推到 GitHub（第一次推 main 分支）
@@ -67,6 +67,29 @@ git push github main
 
 > 每个平台是独立 job，某个失败不影响其它平台出包（`fail-fast: false`）。
 > 失败的 job 会显示红 ❌，点进去看日志。
+
+---
+
+## 二·五、发版：打 tag 自动建 Release
+
+推 `v*` 标签时，三平台产物上传完会自动多出一个 `release` job，把三个包挂到
+GitHub Release 上（普通 push `main` 不会发版）：
+
+```bash
+git tag -a v1.3.0 -m "1.3.0：暗色主题 + 附件系统预览"
+git push github v1.3.0
+```
+
+- Release 的说明由 `--generate-notes` 根据标签之间的 PR/commit 自动生成，随后可在
+  GitHub 上手动润色。
+- **任何一个平台构建失败，release job 整个跳过**（`needs: build`），不会发出半个版本；
+  修好后重推同一个 tag，Release 已存在时会用 `--clobber` 覆盖同名产物，不会报错。
+- 只有这个 job 带 `contents: write` 权限，`checks` 和 `build` 仍是只读。
+- 想改版本号：删掉远端 tag（`git push github :refs/tags/v1.3.0`）再重新打。
+
+> 依赖提醒：`.github/dependabot.yml` 会每周检查 pip 依赖、每月检查 Actions 版本。
+> 本仓库版本是刻意锁死的（PySide6 一动就可能重新踩打包坑），所以 dependabot 只开 PR、
+> 不自动合并；合并前请在三平台各跑一次打包冒烟。
 
 ---
 
@@ -138,21 +161,45 @@ CI 的 Linux 机装了 `fonts-noto-cjk` 供**冒烟测试**用，但**产物本�
 
 ## 五、workflow 都做了什么（对照排查）
 
+分两个 job：`前置校验`（几秒钟）→ `构建`（三平台矩阵）。前置校验没过就不会浪费三平台的额度。
+
+### job 1：前置校验（`checks`）
+
+| 步骤 | 作用 |
+|---|---|
+| Python 语法编译 | `python -m compileall -q AI_chat`，抓缩进/语法错 |
+| 校验外壳 HTML 未被改动 | `cmp AI_chat/web/starty.html material/STARTY.html`，红线：外壳必须逐字节一致，新功能只能加在 `app.js` / `app.css` 外挂层 |
+| 校验前端脚本语法 | `node --check` 跑 `app.js` / `chat.js` / `webchat.js`，避免漏个括号只在运行时报 |
+| 校验主题与图标引用 | 明暗两套 `theme.qss` / `theme_dark.qss` 都在、`@RES@` 占位符没丢、QSS 里引用的 svg 真的存在（写错不报错，只是图标运行时静默消失） |
+| 扫描误提交的密钥 | 在 `AI_chat/`、`docs/` 里找 `sk-…`/`ghp_…`/`AKIA…` 这类形态的串；密钥只该待在客户端钥匙串（`AI_chat/secrets_store.py`） |
+
+### job 2：三平台构建（`build`，`needs: checks`）
+
 | 步骤 | 作用 |
 |---|---|
 | 检出代码 | 拉取仓库（含已入库的 spec / requirements / web 前端 vendor） |
 | 安装 Python 3.12 | `actions/setup-python`，带 pip 缓存 |
 | 安装 Linux 系统依赖 | 仅 Linux：WebEngine 运行/构建所需的 X、NSS、GBM、ALSA 等库 |
 | 安装 Python 依赖 | `pip install -r requirements.txt`（版本已锁定） |
+| 校验 .ui 与生成代码同步 | 用 `pyside6-uic` 重新生成到临时目录和入库的 `UI/*.py` 比对；只改了 `.ui` 忘了重新生成会在这里失败（本仓库运行时装的是生成物） |
 | PyInstaller 构建 | `pyinstaller AI_chat.spec --noconfirm --clean` |
 | 校验产物 | 确认主程序 + `QtWebEngineProcess` + `.pak` + `icudtl.dat` 都在包里 |
+| 校验随包资源 | `find dist -name …` 确认 `theme_dark.qss`、`starty.html`、`app.js`、KaTeX 等进了包；缺了的表现是"包能启动但界面是坏的" |
 | 打包 | Win→zip / Linux→tar.gz / mac→zip（`ditto` 保留 .app 软链） |
 | 上传产物 | `actions/upload-artifact`，保留 30 天 |
-| 启动冒烟（仅 Linux） | offscreen 启动，进程存活 20s 即判通过 |
+| 启动冒烟（Linux + macOS） | offscreen 启动产物，进程存活 20s 即判通过 |
 
-> 冒烟测试只在 Linux 做（无头最可靠）；Windows/macOS 的 CI 是无界面环境，
-> 强行跑 GUI 反而不稳，故只做"产物文件校验"。**完整功能测试请下载产物在真机上做**，
-> 走 [BUILD.md](BUILD.md) 末尾的自检清单。
+### job 3：发版（`release`，只在推 `v*` 标签时跑）
+
+| 步骤 | 作用 |
+|---|---|
+| 下载三平台产物 | `actions/download-artifact`，拿到 zip / tar.gz |
+| 创建或补全 Release | `gh release create --generate-notes`；同名 Release 已存在则 `--clobber` 覆盖上传 |
+
+> 冒烟测试在 Linux 和 macOS 用 `QT_QPA_PLATFORM=offscreen` 做（无头最可靠）。
+> Windows 无头会话里起 GUI 进程不稳，故只做产物与资源校验；要是 macOS 那步在
+> runner 上表现不稳，直接删掉对应 step 即可——产物上传在它之前就已经完成了。
+> **完整功能测试请下载产物在真机上做**，走 [BUILD.md](BUILD.md) 末尾的自检清单。
 
 ---
 

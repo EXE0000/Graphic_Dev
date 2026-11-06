@@ -28,6 +28,7 @@ import exporters
 import fonts
 import image_gen
 import secrets_store
+import theme
 import web_server
 
 from web_search import (search_web, format_search_block, to_sources,
@@ -38,7 +39,6 @@ from web_search import (search_web, format_search_block, to_sources,
 
 ORG, APP_NAME = "Graphic_Dev", "AI_chat"
 WEB_DIR = app_paths.resource_dir() / "web"
-RES_DIR = app_paths.resource_dir() / "resources"
 
 
 def file_url(path) -> str:
@@ -51,17 +51,14 @@ def file_url(path) -> str:
         QUrl.ComponentFormattingOption.FullyEncoded)
 
 
-def apply_theme():
-    """加载 QSS 主题（把 @RES@ 替换成资源目录的绝对路径）。"""
-    qss_path = RES_DIR / "theme.qss"
-    if not qss_path.exists():
-        return
-    qss = qss_path.read_text(encoding="utf-8")
-    # 这里必须用「普通绝对路径」：Qt 的 QSS 解析器不认 file:///，
-    # 会把它当成相对路径拼到当前目录后面，导致 svg 加载失败。
-    qss = (qss.replace("@RES@", RES_DIR.as_posix())
-              .replace("@UIFONT@", fonts.ui_font()))
-    QApplication.instance().setStyleSheet(qss)
+def apply_theme(mode=None):
+    """加载明暗主题（QSS + 调色板），返回实际生效的 "light" / "dark"。
+
+    mode 为空时读设置里的偏好，main() 启动就是走这条路径。
+    """
+    if mode is None:
+        mode = QSettings(ORG, APP_NAME).value("theme_mode", "auto", type=str)
+    return theme.apply(mode if mode in theme.MODES else "auto")
 DEFAULT_SYSTEM_PROMPT = """你是运行在 Graphic_Dev 桌面客户端中的 AI 助手。
 
 - 风格：直接、具体、不绕弯子；不确定就明说，不编造。
@@ -959,6 +956,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._pending = False
         self._web_ready = False
         self._initial_loaded = False
+        self._theme_mode = "auto"          # 偏好：跟随系统 / 浅色 / 深色
+        self._theme = "light"              # 解析后真正生效的那一套
         self._pending_sources = []
         self._attachments = []
         self._streaming = False
@@ -982,6 +981,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._gui_timer.start(20)      # HTTP 线程的任务在这里执行
         self._connect_signals()
         self._load_settings()
+        theme.watch_system(self._on_system_scheme_changed)
         self._ui_ready = True             # 加载完成后再允许探测能力
         self._load_history()
         attach_mod.cleanup_old()          # 清掉过期的附件副本
@@ -999,6 +999,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         for key in PROVIDER_ORDER:
             self.search_provider_combo.addItem(PROVIDERS[key]["label"], key)
+
+        for label, data in theme.MODE_ITEMS:
+            self.theme_mode_combo.addItem(label, data)
 
         # 附件相关控件来自 main_window.ui（attach_button / attach_bar / attach_layout）
         self.attach_layout.setSpacing(6)
@@ -1068,6 +1071,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             str(s.value("deep_thinking", "true")).lower() == "true")
         self.capability_prompt_check.setChecked(
             str(s.value("capability_prompt", "true")).lower() == "true")
+        saved_theme = s.value("theme_mode", "auto", type=str)
+        self._theme_mode = saved_theme if saved_theme in theme.MODES else "auto"
+        theme_index = self.theme_mode_combo.findData(self._theme_mode)
+        if theme_index >= 0:
+            self.theme_mode_combo.setCurrentIndex(theme_index)
+        # main() 里已经按设置刷过一遍，这里只记下实际生效的明暗，不再重复加载
+        self._theme = theme.resolve(self._theme_mode)
         try:
             cached = json.loads(s.value("reasoning_caps", "{}", type=str)) or {}
             # 只保留当前探测版本（v2）的结论，旧版本结论可能不准
@@ -1331,6 +1341,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if ok:
             self._web_ready = True
             self._initial_loaded = True
+            self._apply_web_theme()     # 先定明暗，再渲染，避免浅色闪一下
             self._render_chat()
             return
 
@@ -1456,6 +1467,36 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.statusbar.showMessage(
                 "内置能力说明已关闭，公式 / 图表 / 配图可能不渲染", 10000)
 
+    def _set_theme_mode(self, mode):
+        """切主题：记住偏好，同时刷 Qt 端（QSS + 调色板）和聊天页。"""
+        self._theme_mode = mode if mode in theme.MODES else "auto"
+        index = self.theme_mode_combo.findData(self._theme_mode)
+        if index >= 0 and self.theme_mode_combo.currentIndex() != index:
+            self.theme_mode_combo.setCurrentIndex(index)
+        self._theme = apply_theme(self._theme_mode)
+        self._settings.setValue("theme_mode", self._theme_mode)
+        self._settings.sync()
+        self._apply_web_theme()
+
+    def _on_theme_selected(self, index):
+        """个性化页的主题下拉框，只有用户点击才会触发。"""
+        self._set_theme_mode(self.theme_mode_combo.itemData(index))
+        self.statusbar.showMessage(
+            "已切换到%s主题" % ("深色" if self._theme == "dark" else "浅色"), 4000)
+
+    def _on_system_scheme_changed(self):
+        """选了「跟随系统」时，macOS 切明暗要立刻跟上；另外两档忽略。"""
+        if self._theme_mode != "auto":
+            return
+        self._theme = apply_theme("auto")
+        self._apply_web_theme()
+
+    def _apply_web_theme(self):
+        """把明暗同步给聊天页：只改 <html data-theme>，页面不用重新加载。"""
+        if not self._web_ready:
+            return
+        self.textBrowser.page().runJavaScript(theme.page_script(self._theme))
+
     def on_clear_config(self):
         """一键清空本机配置（含钥匙串里的密钥），聊天记录不受影响。"""
         ret = QMessageBox.question(
@@ -1502,6 +1543,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.reasoning_check.setChecked(True)
         self.capability_prompt_check.setChecked(True)
         self.search_check.setChecked(False)
+        self._set_theme_mode("auto")    # 界面偏好也回到「跟随系统」
 
         if hasattr(self, "model_select_name"):
             self.model_select_name.setText("")
@@ -1897,6 +1939,20 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         except Exception:                    # GUI 线程未就绪或超时
             return False
 
+    def open_local_file(self, path):
+        """用系统默认程序打开本地文件（网页端点附件 chip 时调用）。
+
+        浏览器碰不到 file://，只能由客户端替它调用系统应用。
+        """
+        def open_it():
+            return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+        try:
+            # 用户点了就该有反馈，不能用默认的分钟级超时吊着浏览器
+            return bool(self.run_in_gui(open_it, timeout=10))
+        except Exception:                    # GUI 线程未就绪或超时
+            return False
+
     def apply_web_settings(self, search=None, thinking=None):
         """网页端切换开关 → 同步到客户端复选框（跨线程，排队执行）。"""
         from PySide6.QtCore import QMetaObject, Q_ARG
@@ -2037,6 +2093,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.clear_config_button.clicked.connect(self.on_clear_config)
         self.capability_prompt_check.toggled.connect(
             self._on_capability_toggled)
+        # activated 只响应用户操作：_load_settings 恢复选项时不会顺带刷一遍主题
+        self.theme_mode_combo.activated.connect(self._on_theme_selected)
 
     def _search_test(self, force=False):
         """实测当前搜索服务是否可用，返回 (ok, 说明)。
@@ -2156,13 +2214,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for index, a in enumerate(self._attachments):
             icon = "🖼" if a["kind"] == "image" else "📄"
             chip = QPushButton(f"{icon} {a['name']}    ✕")
+            chip.setObjectName("attach_chip")   # 配色交给 QSS，明暗两套主题各自定义
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chip.setToolTip("点击移除这个附件")
-            chip.setStyleSheet(
-                "QPushButton{border:1px solid #d0d7de;border-radius:10px;"
-                "padding:2px 10px;background:#f6f8fa;font-size:12px;color:#1f2328;}"
-                "QPushButton:hover{background:#ffecec;border-color:#f0b8b8;color:#b42318;}"
-            )
             chip.clicked.connect(lambda _=False, i=index: self._remove_attachment(i))
             self.attach_layout.addWidget(chip)
 
