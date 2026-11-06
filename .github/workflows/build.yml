@@ -147,9 +147,14 @@ jobs:
           for ui in AI_chat/UI/*.ui; do
             base=$(basename "$ui" .ui)
             pyside6-uic "$ui" -o "/tmp/$base.py"
-            if ! diff -q "/tmp/$base.py" "AI_chat/UI/$base.py" >/dev/null; then
+            # pyside6-uic 在 Windows 上按文本模式写文件，行尾是 CRLF，而仓库里统一
+            # 是 LF（见 .gitattributes）——直接逐字节比会整篇不同、每个平台只有
+            # Windows 报错。比之前先把 \r 剥掉，只比真正的内容差异。
+            if ! diff -q <(tr -d '\r' < "/tmp/$base.py") \
+                         <(tr -d '\r' < "AI_chat/UI/$base.py") >/dev/null; then
               echo "❌ $ui 改过但 $base.py 没重新生成，差异如下："
-              diff "/tmp/$base.py" "AI_chat/UI/$base.py" | head -40
+              diff <(tr -d '\r' < "/tmp/$base.py") \
+                   <(tr -d '\r' < "AI_chat/UI/$base.py") | head -40
               exit 1
             fi
             echo "OK $base.py 与 .ui 同步"
@@ -158,6 +163,30 @@ jobs:
       - name: PyInstaller 构建
         id: build
         run: pyinstaller AI_chat.spec --noconfirm --clean
+
+      # 单文件 exe：一个文件更像"软件"，代价是每次启动要把整包解到临时目录。
+      # 只做 Windows 一份（macOS 本来就是 .app，Linux 大家习惯解压即用），
+      # dist/workpath 分开，避免两次构建互相覆盖。
+      - name: PyInstaller 构建（Windows 单文件）
+        id: build_onefile
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:AI_CHAT_ONEFILE = "1"
+          pyinstaller AI_chat.spec --noconfirm --clean --distpath dist_onefile --workpath build_onefile
+
+      - name: 校验单文件产物（Windows）
+        if: runner.os == 'Windows' && steps.build_onefile.outcome == 'success'
+        shell: bash
+        run: |
+          set -e
+          test -f dist_onefile/AI_chat.exe && echo "OK 单文件主程序 AI_chat.exe"
+          count=$(find dist_onefile -maxdepth 1 -type f | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "❌ dist_onefile 里有 $count 个文件，onefile 模式没生效（检查 AI_CHAT_ONEFILE）"
+            exit 1
+          fi
+          ls -lh dist_onefile/AI_chat.exe
 
       # ---- 产物校验：确认主程序和 WebEngine 组件都打进去了 ----
       - name: 校验产物（Windows）
@@ -225,6 +254,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # 单文件版单独一个产物，和文件夹版并存，下载的人自己选（详见 docs/CI_BUILD.md）
+      - name: 上传单文件产物（Windows）
+        if: runner.os == 'Windows' && steps.build_onefile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-onefile
+          path: dist_onefile/AI_chat.exe
+          if-no-files-found: error
+          retention-days: 30
+
       # ---- 无头启动冒烟：进程能存活即视为启动正常 ----
       # offscreen 模式下 WebEngine 会刷一堆 Skia/GPU 报错，那是无头渲染的正常噪音，
       # 判定标准是"进程是否存活"，不是"有没有 stderr 输出"。
@@ -264,6 +303,28 @@ jobs:
           fi
       # Windows 无头会话里起 GUI 进程不稳，冒烟只做产物与资源校验；
       # 真机验证按 docs/CI_BUILD.md 第三节走。
+
+      # 单文件包是新链路（临时解包 + WebEngine 辅助进程路径），CI 里第一次跑
+      # 只观察不卡门禁：失败也不会把三平台产物拖红。等真机确认稳定后，
+      # 把 continue-on-error 去掉让它变成硬校验。
+      - name: 启动冒烟测试（Windows 单文件，观察用）
+        if: runner.os == 'Windows' && steps.build_onefile.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath "dist_onefile\AI_chat.exe" `
+                -RedirectStandardOutput one_out.log -RedirectStandardError one_err.log -PassThru
+          # 单文件要先解包几百 MB，给足时间再判定存活
+          Start-Sleep -Seconds 60
+          if (-not $p.HasExited) {
+            Write-Host "OK 单文件 exe 存活 60s，启动正常"
+            Stop-Process -Id $p.Id -Force
+          } else {
+            Write-Host "WARN 单文件 exe 提前退出，退出码 $($p.ExitCode)"
+          }
+          Write-Host "---- 日志末尾 ----"
+          Get-Content one_out.log, one_err.log -ErrorAction SilentlyContinue | Select-Object -Last 60
 
   # ------------------------------------------------------------------
   # 只有推 v* 标签时才发 Release：三平台产物上传完（build 全绿）才挂出去，

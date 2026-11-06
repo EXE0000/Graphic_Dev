@@ -59,8 +59,11 @@ Qt 插件的 ABI 在小版本间会变，版本漂移是"打包后功能错误"�
 pyinstaller AI_chat.spec --noconfirm --clean
 ```
 - `--clean`：清掉上次构建缓存，避免陈旧文件混入。
-- 产物在 `dist/`。**用 onedir（目录），不要用 onefile**——WebEngine 在 onefile 下
-  解压慢且辅助进程路径更易出错。
+- 产物在 `dist/`。默认用 **onedir（目录）**：WebEngine 的辅助进程就躺在程序旁边，
+  Qt 自己找得到，启动也快。**onefile（单文件）**也能跑，但要满足两个条件——
+  [app.py](../AI_chat/app.py) 的 `_fix_webengine_paths()` 里有单文件专用分支
+  （见本节坑 #4），以及接受每次启动先解包几百 MB 的耗时；分发给别人图省事用它，
+  自己天天用还是 onedir。
 
 ### ④ 冒烟验证（最关键，别省）
 构建成功 ≠ 能跑。**每次构建后都要实际启动一次**，看控制台有没有报错：
@@ -105,6 +108,19 @@ PDF 附件、导出、文生图、重启保留配置）。
    `QTWEBENGINE_RESOURCES_PATH` / `QTWEBENGINE_LOCALES_PATH`，在 `QApplication` 之前生效。
    这是"自愈"写法：路径变了也能自己找到，重建不用改。
    教训：Qt 的报错信息通常会直接告诉你该设哪个环境变量——顺着它给的路径排查。
+
+4. **单文件包（onefile）同样找不到 `QtWebEngineProcess`**
+   `AI_CHAT_ONEFILE=1` 构建出来的单个 exe，资源全在临时解包目录 `_MEIxxxx` 里，
+   而 Qt 只按 exe 同级目录搜索，报错信息里那条 `Helpers/QtWebEngineProcess.app` 路径
+   根本不存在。
+   → 修法：`_fix_webengine_paths()` 增加"单文件包"分支——用 `sys._MEIPASS` 是否等于
+   `exe 同级/_internal` 来判断当前到底是 onefile 还是 onedir（两种模式都会设 `_MEIPASS`），
+   是 onefile 就把 `PySide6/Qt` 这一支扫一遍。Windows 上辅助进程叫
+   `QtWebEngineProcess.exe`，而且文件系统没有可执行位，只能按名字认。
+   实测（macOS 单文件包，offscreen）：渲染进程确实从 `_MEIxxxx` 里起来了，
+   `--webengine-resources-path` 指向正确目录，临时目录退出后自动清理。
+   教训：onefile 不是"换个参数重打包"这么简单，凡是运行时按路径找东西的组件
+   （WebEngine、钥匙串助手、字体）都要重新验一遍。
 
 > 另外两个"沉默的坑"已提前防住：
 > - **certifi 证书**：spec 里 `collect_data_files("certifi")`，否则打包后所有 HTTPS 请求 SSLError。

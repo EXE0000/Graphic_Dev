@@ -2487,19 +2487,52 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         except requests.exceptions.RequestException as e:
             QMessageBox.critical(self, "失败", f"网络错误: {e}")
 
-def _fix_webengine_paths():
-    """PyInstaller + PySide6 6.12 会把 QtWebEngine 的辅助进程/资源错放到
-    framework 的 Versions/Resources/ 下，而根软链指向 Versions/A/，导致打包后
-    启动报 "could not find QtWebEngineProcess / resources"。这里在 QtWebEngine
-    初始化前自动定位真实路径并设好环境变量（仅打包后的 macOS 需要）。"""
-    if not getattr(sys, "frozen", False) or sys.platform != "darwin":
-        return
-    from pathlib import Path
+def _onefile_root():
+    """单文件包（onefile）返回临时解包目录，其它情况返回 None。
 
-    contents = Path(sys.executable).resolve().parent.parent   # <App>.app/Contents
-    fw = contents / "Frameworks/PySide6/Qt/lib/QtWebEngineCore.framework"
-    root = fw if fw.is_dir() else contents / "Frameworks" / "PySide6"
+    PyInstaller 两种模式都会设 sys._MEIPASS：onedir 指向 exe 旁边的 _internal，
+    只有 onefile 才指向临时目录里的解包处。onedir 那套布局 Qt 自己能找对，
+    不需要我们插手，所以必须区分开——否则每次启动都白扫一遍目录树。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    root = pathlib.Path(meipass)
     if not root.is_dir():
+        return None
+    if root.resolve() == (pathlib.Path(sys.executable).parent / "_internal").resolve():
+        return None
+    return root
+
+
+def _fix_webengine_paths():
+    """定位 QtWebEngine 的辅助进程和资源，设好三个环境变量。
+
+    两种打包布局需要救，表现都是启动时报
+    "could not find QtWebEngineProcess / resources"：
+    - macOS 文件夹版：PySide6 6.12 把它们错放进 framework 的 Versions/Resources/，
+      而 framework 根软链指向 Versions/A/，Qt 顺着软链找不到；
+    - 单文件包（各平台）：东西在临时解包目录里，Qt 只按 exe 同级目录找。
+    必须在 QApplication / WebEngine 初始化之前调用。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    candidates = []
+    if sys.platform == "darwin":
+        contents = pathlib.Path(sys.executable).resolve().parent.parent   # <App>.app/Contents
+        candidates += [contents / "Frameworks/PySide6/Qt/lib/QtWebEngineCore.framework",
+                       contents / "Frameworks" / "PySide6"]
+    onefile = _onefile_root()
+    if onefile is not None:
+        # 只扫 PySide6/Qt 这一支，别整个解包目录翻一遍（单文件包有上万个文件）
+        qt = onefile / "PySide6" / "Qt"
+        candidates.append(qt if qt.is_dir() else onefile)
+
+    root = next((c for c in candidates if c.is_dir()), None)
+    if root is None:
         return
     hits = list(root.rglob("*"))
 
@@ -2507,8 +2540,12 @@ def _fix_webengine_paths():
         return next((h for h in hits if pred(h)), None)
 
     if not os.environ.get("QTWEBENGINEPROCESS_PATH"):
-        proc = _find(lambda h: h.name == "QtWebEngineProcess"
-                     and h.is_file() and os.access(h, os.X_OK))
+        # Windows 上这个辅助进程带 .exe 后缀，而且文件系统没有可执行位，
+        # 只能按名字认；类 Unix 平台再要求真正可执行，避免挑到同名普通文件。
+        proc_name = "QtWebEngineProcess.exe" if sys.platform == "win32" else "QtWebEngineProcess"
+        proc = _find(lambda h: h.name.lower() == proc_name.lower()
+                     and h.is_file()
+                     and (sys.platform == "win32" or os.access(h, os.X_OK)))
         if proc:
             os.environ["QTWEBENGINEPROCESS_PATH"] = str(proc)
 

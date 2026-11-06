@@ -42,7 +42,8 @@ QtWebEngine 占大头）：
 
 | 平台 | 包 | 备注 |
 |---|---|---|
-| Windows x86_64 | `AI_chat-Windows-x86_64.zip` | 解压后运行 `AI_chat\AI_chat.exe` |
+| Windows x86_64 | `AI_chat-Windows-x86_64.zip` | 解压后运行 `AI_chat\AI_chat.exe`，启动最快 |
+| Windows x86_64 | `AI_chat-Windows-x86_64-onefile` | 一个 `AI_chat.exe` 双击即用；启动要先解包，慢十几秒 |
 | Linux x86_64 | `AI_chat-Linux-x86_64.tar.gz` | 需自备 WebEngine 系统库，见 [docs/BUILD.md](docs/BUILD.md) |
 | macOS arm64 | `AI_chat-macOS-arm64.zip` | `ditto` 保留 `.app` 结构；未签名，首次打开需右键「打开」 |
 
@@ -117,8 +118,9 @@ AI_chat.spec          PyInstaller 打包配置
 - 三平台自动打包：push 到 `main`、推 `v*` 标签或手动触发都会跑
   [`.github/workflows/build.yml`](.github/workflows/build.yml)——先跑几秒钟的前置校验
   （语法、外壳一致性、主题与图标引用、密钥扫描），过了才进三平台矩阵；产物上传后
-  在 Linux/macOS 做 offscreen 启动冒烟。推 `v*` 标签时还会自动建一个 GitHub Release
-  并把三个平台的包挂上去。用法与排查见 [docs/CI_BUILD.md](docs/CI_BUILD.md)
+  在 Linux/macOS 做 offscreen 启动冒烟，Windows 额外产出一个单文件 `AI_chat.exe`。
+  推 `v*` 标签时还会自动建一个 GitHub Release 并把各平台的包挂上去。
+  用法与排查见 [docs/CI_BUILD.md](docs/CI_BUILD.md)
 
 ---
 

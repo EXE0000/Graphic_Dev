@@ -25,9 +25,19 @@ pyinstaller AI_chat.spec --noconfirm
 # 3. 产物
 #   dist/AI_chat/            Windows/Linux
 #   dist/AI Chat.app         macOS
+
+# 想要「一个文件」的单文件版（Windows 分发常用）：
+AI_CHAT_ONEFILE=1 pyinstaller AI_chat.spec --noconfirm \
+    --distpath dist_onefile --workpath build_onefile
+#   → dist_onefile/AI_chat.exe（Windows）/ dist_onefile/AI_chat（macOS、Linux）
 ```
 
 预计体积：**300–500 MB**（WebEngine 占大头，压缩后仍大）。
+
+> 单文件版是把上面整个目录压进一个可执行文件，启动时先解包到系统临时目录
+> （`%TEMP%\_MEIxxxxxx`）再运行，所以**首屏会慢十几秒到几十秒**，退出时才清理临时目录。
+> 自己天天用建议留文件夹版，发给别人再用单文件版；两种模式的取舍详见
+> [CI_BUILD.md](CI_BUILD.md) 第二节。
 
 ---
 
@@ -38,8 +48,9 @@ pyinstaller AI_chat.spec --noconfirm
 ```
 AI_chat/                     ← 解压后的运行目录
 ├── AI_chat                （可执行文件 / 或在 .app 里）
-├── AI_chat/web/              chat.html、css、js、vendor/KaTeX（含字体文件）
-├── AI_chat/resources/        theme.qss、check.svg、chevron-down.svg
+├── AI_chat/web/              starty.html、chat.html、css、js、vendor/KaTeX（含字体文件）
+├── AI_chat/resources/        theme.qss、theme_dark.qss、check.svg、
+│                             chevron-down.svg、chevron-down-dark.svg
 │   └── fonts/                可选：随包中文字体（放 .otf/.ttf 即可自动加载）
 └── _internal/                PySide6、Qt 框架、Python 运行时
 ```

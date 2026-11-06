@@ -4,11 +4,17 @@
 用法（在项目根目录）：
     pyinstaller AI_chat.spec --noconfirm
 
+    # 想要"一个文件就是软件"（目前只在 CI 里对 Windows 这么做）：
+    AI_CHAT_ONEFILE=1 pyinstaller AI_chat.spec --noconfirm \
+        --distpath dist_onefile --workpath build_onefile
+
 产物：
     dist/AI_chat/            （Windows/Linux，含可执行文件）
     dist/AI Chat.app         （macOS 应用包）
+    dist_onefile/AI_chat.exe （单文件模式，只有一个可执行文件）
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +22,10 @@ from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).resolve()          # noqa: F821  (SPECPATH 由 PyInstaller 注入)
 SRC = ROOT / "AI_chat"
+
+# 单文件模式：设 AI_CHAT_ONEFILE=1 后产物是一个 exe（内部资源启动时解到临时目录）。
+# 默认还是 onedir（一个文件夹），因为单文件每次启动都要解包几百 MB，明显更慢。
+ONEFILE = os.environ.get("AI_CHAT_ONEFILE", "").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------- 随包资源
 datas = [
@@ -81,47 +91,72 @@ a = Analysis(                                        # noqa: F821
 
 pyz = PYZ(a.pure)                                    # noqa: F821
 
-exe = EXE(                                           # noqa: F821
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="AI_chat",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,                 # WebEngine 的 dylib 压了反而容易出问题
-    console=False,             # 不弹黑框
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-coll = COLLECT(                                      # noqa: F821
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="AI_chat",
-)
-
-if sys.platform == "darwin":
-    app = BUNDLE(                                    # noqa: F821
-        coll,
-        name="AI Chat.app",
-        icon=None,
-        bundle_identifier="com.graphicdev.aichat",
-        info_plist={
-            "CFBundleName": "AI Chat",
-            "CFBundleDisplayName": "AI Chat",
-            "NSHighResolutionCapable": True,
-            "LSMinimumSystemVersion": "12.0",
-            # 允许访问用户选择的文件（附件）
-            "NSDocumentsFolderUsageDescription": "读取你选择的附件用于分析",
-            "NSDownloadsFolderUsageDescription": "保存生成的图片和文档",
-        },
+if ONEFILE:
+    # 单文件：binaries/datas 一起塞进 exe，启动时解到 %TEMP%\_MEIxxxx（macOS/Linux
+    # 是 /tmp/_MEIxxxx），所以 app_paths.resource_dir() 走 sys._MEIPASS 那条分支即可。
+    # 代价是每次启动都要解包（包体 300–500MB，慢机器上首屏要等十几秒到几十秒），
+    # 且未签名的单文件更容易被 SmartScreen/杀软拦——日常自用建议还是 onedir。
+    exe = EXE(                                       # noqa: F821
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name="AI_chat",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        runtime_tmpdir=None,
+        console=False,             # 不弹黑框
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
     )
+else:
+    exe = EXE(                                       # noqa: F821
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="AI_chat",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,                 # WebEngine 的 dylib 压了反而容易出问题
+        console=False,             # 不弹黑框
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+
+    coll = COLLECT(                                  # noqa: F821
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name="AI_chat",
+    )
+
+    if sys.platform == "darwin":
+        app = BUNDLE(                                # noqa: F821
+            coll,
+            name="AI Chat.app",
+            icon=None,
+            bundle_identifier="com.graphicdev.aichat",
+            info_plist={
+                "CFBundleName": "AI Chat",
+                "CFBundleDisplayName": "AI Chat",
+                "NSHighResolutionCapable": True,
+                "LSMinimumSystemVersion": "12.0",
+                # 允许访问用户选择的文件（附件）
+                "NSDocumentsFolderUsageDescription": "读取你选择的附件用于分析",
+                "NSDownloadsFolderUsageDescription": "保存生成的图片和文档",
+            },
+        )

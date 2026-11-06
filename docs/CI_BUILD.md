@@ -59,14 +59,39 @@ git push github main
 ## 二、下载产物
 
 1. Actions → 点进那次运行（run）。
-2. 拉到页面底部 **Artifacts** 区，会看到三个：
-   - `AI_chat-Windows-x86_64`（.zip）
+2. 拉到页面底部 **Artifacts** 区，会看到四个：
+   - `AI_chat-Windows-x86_64`（.zip，解压是一个文件夹）
+   - `AI_chat-Windows-x86_64-onefile`（`AI_chat.exe` 单文件，双击即用）
    - `AI_chat-Linux-x86_64`（.tar.gz）
    - `AI_chat-macOS-arm64`（.zip）
 3. 点名字下载（需登录 GitHub）。产物默认保留 **30 天**。
 
 > 每个平台是独立 job，某个失败不影响其它平台出包（`fail-fast: false`）。
 > 失败的 job 会显示红 ❌，点进去看日志。
+
+### Windows 为什么给两份
+
+| | 文件夹版（onedir） | 单文件版（onefile） |
+|---|---|---|
+| 长得像软件 | ❌ 一个文件夹 + 一堆 dll | ✅ 就一个 `AI_chat.exe` |
+| 启动速度 | 快，直接跑 | 慢，每次启动要把 300–500 MB 解到 `%TEMP%\_MEIxxxxxx`，机械硬盘/杀软扫描下首屏十几秒到几十秒 |
+| 磁盘占用 | 解压后那份 | 临时目录里再多一份解包，退出才清理 |
+| 杀软/SmartScreen | 一般 | 单文件自解压更容易被判定为可疑，误报率更高 |
+| 适合 | 自己天天用 | 发给别人、截图好看 |
+
+两个版本功能完全一样，是同一个 spec 用环境变量 `AI_CHAT_ONEFILE=1` 各构建一次；
+本地想要单文件版：
+
+```bash
+set AI_CHAT_ONEFILE=1        # PowerShell 用 $env:AI_CHAT_ONEFILE="1"
+pyinstaller AI_chat.spec --noconfirm --distpath dist_onefile --workpath build_onefile
+# → dist_onefile\AI_chat.exe
+```
+
+CI 里单文件版有一次 offscreen 启动冒烟，但**先设成不卡门禁**（`continue-on-error`）：
+Windows 无头会话起 GUI 本来就不稳，而且单文件 + WebEngine 是新链路，先观察几轮。
+你在真机上确认 `AI_chat.exe` 能正常打开、聊天页能渲染，就把那一步的
+`continue-on-error: true` 删掉，让它变成硬校验。
 
 ---
 
@@ -96,7 +121,9 @@ git push github v1.3.0
 ## 三、下载后怎么跑（各平台注意）
 
 ### Windows（x86_64）
-解压 zip → 进 `AI_chat\` → 双击 `AI_chat.exe`。
+**文件夹版**：解压 zip → 进 `AI_chat\` → 双击 `AI_chat.exe`。
+**单文件版**：下 `AI_chat-Windows-x86_64-onefile`，拿到就是一个 `AI_chat.exe`，双击即可
+（第一次启动会先解包，慢十几秒到几十秒；见第二节「Windows 为什么给两份」）。
 - 目标机需 **Windows 10 1809+**。
 - 未签名，SmartScreen 可能拦 → 点「更多信息 → 仍要运行」。
 - 极精简系统若报缺 `MSVCP140.dll`，装「VC++ 2015–2022 Redistributable (x64)」。
@@ -181,13 +208,16 @@ CI 的 Linux 机装了 `fonts-noto-cjk` 供**冒烟测试**用，但**产物本�
 | 安装 Python 3.12 | `actions/setup-python`，带 pip 缓存 |
 | 安装 Linux 系统依赖 | 仅 Linux：WebEngine 运行/构建所需的 X、NSS、GBM、ALSA 等库 |
 | 安装 Python 依赖 | `pip install -r requirements.txt`（版本已锁定） |
-| 校验 .ui 与生成代码同步 | 用 `pyside6-uic` 重新生成到临时目录和入库的 `UI/*.py` 比对；只改了 `.ui` 忘了重新生成会在这里失败（本仓库运行时装的是生成物） |
-| PyInstaller 构建 | `pyinstaller AI_chat.spec --noconfirm --clean` |
+| 校验 .ui 与生成代码同步 | 用 `pyside6-uic` 重新生成到临时目录和入库的 `UI/*.py` 比对；只改了 `.ui` 忘了重新生成会在这里失败（本仓库运行时装的是生成物）。比对前先剥 `\r`：Windows 上 uic 写的是 CRLF，逐字节比会整篇不同 |
+| PyInstaller 构建 | `pyinstaller AI_chat.spec --noconfirm --clean`（文件夹版） |
+| PyInstaller 构建（Windows 单文件） | 仅 Windows：带 `AI_CHAT_ONEFILE=1` 再构建一次，输出到 `dist_onefile`/`build_onefile`，避免和文件夹版互相覆盖 |
+| 校验单文件产物（Windows） | 确认 `dist_onefile` 里**只有一个** `AI_chat.exe`——多出来文件说明 onefile 没生效 |
 | 校验产物 | 确认主程序 + `QtWebEngineProcess` + `.pak` + `icudtl.dat` 都在包里 |
 | 校验随包资源 | `find dist -name …` 确认 `theme_dark.qss`、`starty.html`、`app.js`、KaTeX 等进了包；缺了的表现是"包能启动但界面是坏的" |
 | 打包 | Win→zip / Linux→tar.gz / mac→zip（`ditto` 保留 .app 软链） |
-| 上传产物 | `actions/upload-artifact`，保留 30 天 |
+| 上传产物 | `actions/upload-artifact`，保留 30 天；Windows 额外上传 `-onefile` 那个产物 |
 | 启动冒烟（Linux + macOS） | offscreen 启动产物，进程存活 20s 即判通过 |
+| 启动冒烟（Windows 单文件） | offscreen 跑单文件 exe 60s，**当前 `continue-on-error` 只观察不卡门禁** |
 
 ### job 3：发版（`release`，只在推 `v*` 标签时跑）
 

@@ -7,8 +7,10 @@ __pycache__/
 *.so
 *.egg-info/
 .eggs/
-build/
-dist/
+# 单文件打包用 --distpath dist_onefile / --workpath build_onefile，
+# 输出目录名和默认的 dist/ build/ 不一样，所以这里用前缀通配。
+build*/
+dist*/
 
 # 虚拟环境
 .venv/
