@@ -52,6 +52,7 @@ AI_chat/                     ← 解压后的运行目录
 ├── AI_chat/resources/        theme.qss、theme_dark.qss、check.svg、
 │                             chevron-down.svg、chevron-down-dark.svg
 │   └── fonts/                可选：随包中文字体（放 .otf/.ttf 即可自动加载）
+├── AI_chat/icons/            appicon.png（运行时窗口/任务栏图标）
 └── _internal/                PySide6、Qt 框架、Python 运行时
 ```
 
@@ -71,6 +72,33 @@ def resource_dir():
 | Windows | `%APPDATA%\Graphic_Dev\AI_chat\` |
 | macOS | `~/Library/Application Support/Graphic_Dev/AI_chat/` |
 | Linux | `~/.local/share/Graphic_Dev/AI_chat/` |
+
+---
+
+## 软件图标
+
+源文件只有一个：`icons/logo.svg`。三种平台的图标格式互不相通，所以用
+`icons/make_icons.py` 一次生成三件，**生成物提交进仓库**，打包时直接引用：
+
+```bash
+.venv/bin/python icons/make_icons.py          # 想多留白/少留白加 --fill 0.9
+```
+
+| 文件 | 谁在用 | 说明 |
+|---|---|---|
+| `appicon.ico` | Windows exe（onedir 和 onefile 都用它） | 9 个尺寸（16–256），缺小尺寸的话任务栏图标会被系统缩放成糊的 |
+| `appicon.icns` | macOS `AI Chat.app` | `BUNDLE(icon=…)` 会把它复制进 `Contents/Resources/` 并写 `CFBundleIconFile` |
+| `appicon.png` | 运行时窗口图标 + Linux 随包图标 | `app.py` 的 `set_app_icon()` 在 `QApplication` 之后设，管标题栏、任务栏、对话框角标 |
+
+两个容易忽略的点：
+
+- **exe 图标和运行时图标是两套东西**。只改 spec 的话，资源管理器里的文件图标换了，
+  窗口标题栏和任务栏还是 Qt 默认的；只改 `set_app_icon()` 则反过来。
+- **Linux 的 tar.gz 没有"注册图标"这回事**，随包的 `appicon.png` 只是给你自己写
+  `.desktop` 时指路用的：
+  ```desktop
+  Icon=/opt/AI_chat/_internal/AI_chat/icons/appicon.png
+  ```
 
 ---
 

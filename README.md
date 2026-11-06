@@ -84,6 +84,7 @@ AI_chat/
                       css/、js/、vendor/（KaTeX、marked、highlight.js）
   resources/          theme.qss / theme_dark.qss / SVG 图标 / 可选字体
 docs/                 打包、跨平台、CI 指引
+icons/                软件图标：logo.svg（源）+ make_icons.py + 生成的 ico/icns/png
 material/             网页端设计原型（STARTY.html 及其配图）
 AI_chat.spec          PyInstaller 打包配置
 .github/workflows/    三平台自动打包
@@ -107,7 +108,14 @@ AI_chat.spec          PyInstaller 打包配置
    的密钥形态扫描。
 4. **换行符统一 LF**：见 `.gitattributes`。Windows 机器上如果配了 `core.autocrlf=true`，
    第 1 条的逐字节比对会凭空失败。
-5. **关键功能处保留中文注释**，说明「为什么这么写」而不是「这行做什么」。
+5. **改软件图标要重新生成**：源文件是 `icons/logo.svg`，改完跑
+   ```bash
+   .venv/bin/python icons/make_icons.py
+   ```
+   把 `appicon.ico` / `appicon.icns` / `appicon.png` 一起提交。exe 图标和运行时窗口
+   图标分别由 `AI_chat.spec` 的 `ICON` 和 `app.py` 的 `set_app_icon()` 使用，两边都吃
+   这三个文件。
+6. **关键功能处保留中文注释**，说明「为什么这么写」而不是「这行做什么」。
 
 ---
 

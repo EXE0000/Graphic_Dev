@@ -38,6 +38,34 @@ fonts_dir = SRC / "resources" / "fonts"
 if fonts_dir.is_dir():
     datas.append((str(fonts_dir), "AI_chat/resources/fonts"))
 
+# 运行时窗口/任务栏图标（由 icons/logo.svg 生成，见 icons/make_icons.py）
+datas.append((str(ROOT / "icons" / "appicon.png"), "AI_chat/icons"))
+
+# ---------------------------------------------------------------- 软件图标
+# 三平台各认一种格式：Windows 要 .ico，macOS 要 .icns，Linux 的 tar.gz 没有
+# 图标注册机制，只能靠随包的 png + 桌面入口自己去指。
+ICON_DIR = ROOT / "icons"
+ICON_CANDIDATES = {
+    "win32": "appicon.ico",
+    "darwin": "appicon.icns",
+}
+
+
+def _icon_path():
+    """返回当前平台能用的图标文件路径，没有就返回 None（不阻断打包）。"""
+    name = ICON_CANDIDATES.get(sys.platform)
+    if name is None:
+        return None                       # Linux：exe 上没有图标这一说
+    path = ICON_DIR / name
+    if not path.is_file():
+        print("警告：找不到 %s，本次打包不带软件图标；"
+              "跑一次 python icons/make_icons.py 生成" % path)
+        return None
+    return str(path)
+
+
+ICON = _icon_path()
+
 binaries = []
 
 # ---------------------------------------------------------------- 隐式依赖
@@ -103,6 +131,7 @@ if ONEFILE:
         a.datas,
         [],
         name="AI_chat",
+        icon=ICON,                 # 单文件 exe 的图标同样由 ICON 决定
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -122,6 +151,7 @@ else:
         [],
         exclude_binaries=True,
         name="AI_chat",
+        icon=ICON,
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -148,7 +178,7 @@ else:
         app = BUNDLE(                                # noqa: F821
             coll,
             name="AI Chat.app",
-            icon=None,
+            icon=ICON,
             bundle_identifier="com.graphicdev.aichat",
             info_plist={
                 "CFBundleName": "AI Chat",

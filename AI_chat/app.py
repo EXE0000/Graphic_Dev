@@ -13,7 +13,7 @@ import requests
 
 from PySide6.QtCore import (QEvent, QObject, QSettings, QThread, QTimer,
                             Qt, QUrl, Signal)
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHeaderView,
                                QMainWindow, QMessageBox, QPushButton,
@@ -2558,6 +2558,25 @@ def _fix_webengine_paths():
                 os.environ["QTWEBENGINE_LOCALES_PATH"] = str(locales)
 
 
+def set_app_icon(app):
+    """给应用设运行时图标（标题栏、任务栏、消息框那些角标）。
+
+    这跟打包时写进 exe 的图标是两回事：那个由 AI_chat.spec 的 ICON 决定，管的是
+    资源管理器里的文件图标；这个管应用运行中出现的图标。两边都设才像"一个软件"。
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    candidates = [app_paths.resource_dir() / "icons" / "appicon.png",   # 打包后
+                  here.parent / "icons" / "appicon.png"]                # 源码运行
+    for path in candidates:
+        if path.is_file():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                app.setWindowIcon(icon)
+                return
+    print("提示：没找到 icons/appicon.png，窗口将使用默认图标；"
+          "跑一次 python icons/make_icons.py 生成")
+
+
 if __name__ == "__main__":
     # Linux 上以 root 运行时，Chromium 沙箱会直接崩溃
     if sys.platform.startswith("linux") and getattr(os, "geteuid", None) \
@@ -2566,6 +2585,7 @@ if __name__ == "__main__":
 
     _fix_webengine_paths()          # 必须在 QApplication / WebEngine 初始化前
     app = QApplication(sys.argv)
+    set_app_icon(app)               # 标题栏/任务栏/对话框图标
     families = fonts.register_bundled_fonts()   # 随包字体（Linux 尤其需要）
     if families:
         print("已加载内置字体:", ", ".join(families[:3]))

@@ -194,10 +194,11 @@ CI 的 Linux 机装了 `fonts-noto-cjk` 供**冒烟测试**用，但**产物本�
 
 | 步骤 | 作用 |
 |---|---|
-| Python 语法编译 | `python -m compileall -q AI_chat`，抓缩进/语法错 |
+| Python 语法编译 | `python -m compileall -q AI_chat icons`，抓缩进/语法错 |
 | 校验外壳 HTML 未被改动 | `cmp AI_chat/web/starty.html material/STARTY.html`，红线：外壳必须逐字节一致，新功能只能加在 `app.js` / `app.css` 外挂层 |
 | 校验前端脚本语法 | `node --check` 跑 `app.js` / `chat.js` / `webchat.js`，避免漏个括号只在运行时报 |
 | 校验主题与图标引用 | 明暗两套 `theme.qss` / `theme_dark.qss` 都在、`@RES@` 占位符没丢、QSS 里引用的 svg 真的存在（写错不报错，只是图标运行时静默消失） |
+| 校验软件图标 | `icons/` 里 `logo.svg` + `appicon.ico`/`.icns`/`.png` 四件齐、ico 的目录项自洽（尺寸够多、条目不越界）、icns 的 magic 对；缺了就是"打包出来的软件没图标"。只查结构不比字节，因为 Qt 的 PNG 编码跨平台不一致 |
 | 扫描误提交的密钥 | 在 `AI_chat/`、`docs/` 里找 `sk-…`/`ghp_…`/`AKIA…` 这类形态的串；密钥只该待在客户端钥匙串（`AI_chat/secrets_store.py`） |
 
 ### job 2：三平台构建（`build`，`needs: checks`）
@@ -213,7 +214,7 @@ CI 的 Linux 机装了 `fonts-noto-cjk` 供**冒烟测试**用，但**产物本�
 | PyInstaller 构建（Windows 单文件） | 仅 Windows：带 `AI_CHAT_ONEFILE=1` 再构建一次，输出到 `dist_onefile`/`build_onefile`，避免和文件夹版互相覆盖 |
 | 校验单文件产物（Windows） | 确认 `dist_onefile` 里**只有一个** `AI_chat.exe`——多出来文件说明 onefile 没生效 |
 | 校验产物 | 确认主程序 + `QtWebEngineProcess` + `.pak` + `icudtl.dat` 都在包里 |
-| 校验随包资源 | `find dist -name …` 确认 `theme_dark.qss`、`starty.html`、`app.js`、KaTeX 等进了包；缺了的表现是"包能启动但界面是坏的" |
+| 校验随包资源 | `find dist -name …` 确认 `theme_dark.qss`、`starty.html`、`app.js`、KaTeX、`appicon.png` 等进了包；缺了的表现是"包能启动但界面是坏的" |
 | 打包 | Win→zip / Linux→tar.gz / mac→zip（`ditto` 保留 .app 软链） |
 | 上传产物 | `actions/upload-artifact`，保留 30 天；Windows 额外上传 `-onefile` 那个产物 |
 | 启动冒烟（Linux + macOS） | offscreen 启动产物，进程存活 20s 即判通过 |

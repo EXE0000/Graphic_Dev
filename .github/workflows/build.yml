@@ -37,7 +37,7 @@ jobs:
           python-version: '3.12'
 
       - name: Python 语法编译
-        run: python -m compileall -q AI_chat
+        run: python -m compileall -q AI_chat icons
 
       # 红线：外壳 HTML 必须与 material/STARTY.html 逐字节一致，
       # 网页端所有功能只能靠 app.js/app.css 的外挂层实现。
@@ -75,6 +75,42 @@ jobs:
           if bad:
               sys.exit("QSS 引用了不存在的文件：\n  " + "\n  ".join(bad))
           print("OK 明暗两套主题与引用的图标都在")
+          PY
+
+      # 软件图标是生成出来的二进制产物（源文件是 icons/logo.svg），改完源图要重跑
+      # icons/make_icons.py 再把三个文件一起提交；这里只校验产物齐不齐、结构对不对，
+      # 不做逐字节比对——Qt 的 PNG 编码跨平台不保证一致，比了会误伤。
+      - name: 校验软件图标
+        run: |
+          set -e
+          python - <<'PY'
+          import pathlib, struct, sys
+          icons = pathlib.Path("icons")
+          if not (icons / "logo.svg").is_file():
+              sys.exit("缺少源图标 icons/logo.svg")
+          names = ("appicon.ico", "appicon.icns", "appicon.png")
+          missing = [n for n in names if not (icons / n).is_file()]
+          if missing:
+              sys.exit("缺少软件图标 %s：跑 python icons/make_icons.py 生成后一起提交"
+                       % ", ".join(missing))
+
+          d = (icons / "appicon.ico").read_bytes()
+          reserved, kind, count = struct.unpack("<HHH", d[:6])
+          if (reserved, kind) != (0, 1):
+              sys.exit("appicon.ico 头部不对：reserved=%d type=%d（应为 0 和 1）"
+                       % (reserved, kind))
+          if count < 4:
+              sys.exit("appicon.ico 只有 %d 个尺寸，Windows 小图标会糊" % count)
+          for i in range(count):
+              w, h, _, _, _, bpp, size, off = struct.unpack(
+                  "<BBBBHHII", d[6 + 16 * i:22 + 16 * i])
+              if bpp != 32 or off + size > len(d):
+                  sys.exit("appicon.ico 第 %d 个条目异常（位深 %d，偏移 %d 长 %d）"
+                           % (i, bpp, off, size))
+
+          if (icons / "appicon.icns").read_bytes()[:4] != b"icns":
+              sys.exit("appicon.icns 不是合法的 icns 文件")
+          print("OK 软件图标齐了：%d 个尺寸的 ico、icns 和运行时 png" % count)
           PY
 
       # 密钥只应该待在系统钥匙串里（AI_chat/secrets_store.py），不进仓库
@@ -225,7 +261,8 @@ jobs:
         run: |
           set -e
           for name in theme.qss theme_dark.qss chevron-down.svg chevron-down-dark.svg \
-                      starty.html chat.html webchat.html app.js katex.min.js katex.min.css; do
+                      starty.html chat.html webchat.html app.js katex.min.js \
+                      katex.min.css appicon.png; do
             find dist -name "$name" | grep -q . || { echo "❌ 包里没有 $name"; exit 1; }
             echo "OK $name"
           done
