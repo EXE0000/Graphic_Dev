@@ -1875,6 +1875,28 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if worker is not None:
             worker.cancel()
 
+    def select_web_model(self, name):
+        """网页端选模型 → 勾选客户端列表里的同名行（跨线程，排队到 GUI 线程）。
+
+        模型列表和勾选状态只属于桌面端，网页端只发一个名字过来。
+        """
+        target = (name or "").strip()
+        if not target:
+            return False
+
+        def apply():
+            for r in range(self.models_table.rowCount()):
+                item = self.models_table.item(r, 0)
+                if item is not None and item.text() == target:
+                    self._toggle_row(r)      # 同时刷新加粗、标签文字和推理控件
+                    return True
+            return False
+
+        try:
+            return bool(self.run_in_gui(apply))
+        except Exception:                    # GUI 线程未就绪或超时
+            return False
+
     def apply_web_settings(self, search=None, thinking=None):
         """网页端切换开关 → 同步到客户端复选框（跨线程，排队执行）。"""
         from PySide6.QtCore import QMetaObject, Q_ARG
@@ -1896,7 +1918,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if not cfg:
             reason = "请先在客户端「API 配置」填写地址和 KEY"
         elif not model:
-            reason = "请先在客户端选择模型"
+            reason = "请先选择模型"
         else:
             reason = ""
         search_available = bool(self.search_key_text.text().strip())
@@ -1904,6 +1926,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             "ready": ready,
             "reason": reason,
             "model": model,
+            "models": self._existing_models(),
             "search": self.search_check.isChecked() and search_available,
             "search_available": search_available,
             "image": bool(self.image_config()),

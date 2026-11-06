@@ -292,6 +292,11 @@ class WebChatServer:
                 return self._send_text(handler, 403, "无效的访问令牌，请从客户端重新打开。")
             return self._send_page(handler)
 
+        if path == "/legacy":
+            if query.get("t", [""])[0] != self.token:
+                return self._send_text(handler, 403, "无效的访问令牌，请从客户端重新打开。")
+            return self._send_page(handler, legacy=True)
+
         if path.startswith("/static/"):
             target = (WEB_DIR / path[len("/static/"):]).resolve()
             if WEB_DIR.resolve() not in target.parents and target != WEB_DIR:
@@ -390,6 +395,8 @@ class WebChatServer:
             return self._send_json(handler, {"ok": True})
         if parsed.path == "/api/setting":
             return self.handle_setting(handler)
+        if parsed.path == "/api/model":
+            return self.handle_model(handler)
         if parsed.path == "/api/upload":
             return self.handle_upload(handler)
         if parsed.path == "/api/export":
@@ -642,6 +649,30 @@ class WebChatServer:
             cfg["search"] = bool(search)
         if thinking is not None:
             cfg["thinking"] = bool(thinking)
+        cfg["reasoning"] = self.reasoning
+        return self._send_json(handler, cfg)
+
+    def handle_model(self, handler):
+        """网页端切换模型：只允许客户端已配置的模型名，切换后回最新配置。"""
+        try:
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+        except ValueError:
+            return self._send_text(handler, 400, "invalid json")
+
+        name = str(payload.get("model") or "").strip()
+        available = self.controller.web_config().get("models") or []
+        if name not in available:                 # 白名单：不接受任意字符串
+            return self._send_text(handler, 400, "客户端没有该模型")
+        if not self.controller.select_web_model(name):
+            return self._send_text(handler, 400, "客户端没有该模型")
+
+        cfg = self.controller.web_config()
+        cfg["model"] = name                       # 立刻回显，不等 GUI 线程排队
+        if not cfg.get("reasoning_supported", True):
+            # 换到的模型不支持推理强度：等级归位关闭，两端同步
+            self.reasoning = "off"
+            self.controller.apply_web_settings(thinking=False)
+            cfg["thinking"] = False
         cfg["reasoning"] = self.reasoning
         return self._send_json(handler, cfg)
 
@@ -918,15 +949,29 @@ class WebChatServer:
                 except OSError:
                     pass
 
-    def _send_page(self, handler):
+    def _send_page(self, handler, legacy=False):
         """返回页面，并给 css/js 加上版本号，避免浏览器用旧缓存。"""
         import re as _re
 
-        path = WEB_DIR / "webchat.html"
+        name = "webchat.html" if legacy else "starty.html"
+        path = WEB_DIR / name
         if not path.is_file():
             return self._send_text(handler, 404, "not found")
 
         html = path.read_text(encoding="utf-8")
+        if not legacy:
+            # STARTY 外壳保持原样（不改其 HTML/CSS），只在 </body> 前注入绑定层与渲染依赖。
+            inject = (
+                '<link rel="stylesheet" href="/static/vendor/hljs-github-dark.min.css">\n'
+                '<link rel="stylesheet" href="/static/vendor/katex.min.css">\n'
+                '<link rel="stylesheet" href="/static/css/app.css">\n'
+                '<script src="/static/vendor/marked.min.js"></script>\n'
+                '<script src="/static/vendor/katex.min.js"></script>\n'
+                '<script src="/static/vendor/auto-render.min.js"></script>\n'
+                '<script src="/static/vendor/highlight.min.js"></script>\n'
+                '<script src="/static/js/app.js"></script>\n'
+            )
+            html = html.replace("</body>", inject + "</body>", 1)
         version = str(self.started_at)
         html = _re.sub(r'(/static/[^"\']+\.(?:css|js))"',
                        r'\1?v=' + version + '"', html)

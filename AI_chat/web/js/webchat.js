@@ -300,6 +300,32 @@
     return /^https?:\/\//i.test(u) ? u : "#";
   }
 
+  // 复制文本：优先用 Clipboard API（localhost 属于安全上下文）；
+  // 该 API 在部分内嵌/无权限环境会 reject，此时退回 execCommand，保证尽量能复制。
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).catch(function () {
+        return legacyCopy(text);
+      });
+    }
+    return legacyCopy(text);
+  }
+
+  function legacyCopy(text) {
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy") ? resolve() : reject();
+      } catch (e) { reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+
   function highlight(text, keyword) {
     var safe = escapeHtml(text);
     if (!keyword) return safe;
@@ -437,6 +463,53 @@
       .catch(function () { alert("保存失败：图片可能已被删除"); });
   }
 
+  // 给代码块加语法高亮、语言标签和右上角复制按钮（深色卡片，仿大模型官网）。
+  // 必须在 sanitizeHtml 之后用 createElement 构建：button/svg 会被消毒器删掉，
+  // 不能直接写进 markdown 的 innerHTML 里。
+  function decorateCodeBlocks(root) {
+    var scope = root || document;
+    Array.prototype.forEach.call(
+      scope.querySelectorAll("pre > code"), function (code) {
+        var pre = code.parentNode;
+        if (!pre || !pre.parentNode
+            || pre.parentNode.classList.contains("code-block")) return;
+
+        var match = /language-([\w+-]+)/.exec(code.className || "");
+        var lang = match ? match[1] : "";
+
+        if (window.hljs) {
+          try { hljs.highlightElement(code); }
+          catch (e) { /* 高亮失败不影响代码正常显示 */ }
+        }
+
+        var wrap = el("div", "code-block");
+        pre.parentNode.insertBefore(wrap, pre);
+
+        var bar = el("div", "code-block__bar");
+        bar.appendChild(el("span", "code-block__lang", lang || "text"));
+
+        var copy = el("button", "code-block__copy", "复制");
+        copy.type = "button";
+        copy.addEventListener("click", function () {
+          copyText(code.textContent).then(function () {
+            copy.textContent = "已复制";
+            copy.classList.add("is-copied");
+            setTimeout(function () {
+              copy.textContent = "复制";
+              copy.classList.remove("is-copied");
+            }, 1500);
+          }).catch(function () {
+            copy.textContent = "复制失败";
+            setTimeout(function () { copy.textContent = "复制"; }, 1500);
+          });
+        });
+        bar.appendChild(copy);
+
+        wrap.appendChild(bar);
+        wrap.appendChild(pre);
+      });
+  }
+
   // 把正文里的 [1][2] 变成可点击的来源链接（跳过代码块和已有链接）
   function linkCitations(root, sources) {
     if (!root || !sources || !sources.length) return;
@@ -536,6 +609,7 @@
     typeset(node);
     decorateImages(node);
     linkCitations(node, sources);
+    decorateCodeBlocks(node);
   }
 
   function typeset(node) {
