@@ -279,7 +279,7 @@ jobs:
       contents: write          # 写权限只给这一个 job，build/checks 仍是只读
     steps:
       - name: 下载三平台产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-files
 
