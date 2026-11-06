@@ -247,7 +247,7 @@ jobs:
 
       - name: 上传产物
         if: steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.*
@@ -257,7 +257,7 @@ jobs:
       # 单文件版单独一个产物，和文件夹版并存，下载的人自己选（详见 docs/CI_BUILD.md）
       - name: 上传单文件产物（Windows）
         if: runner.os == 'Windows' && steps.build_onefile.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}-onefile
           path: dist_onefile/AI_chat.exe
