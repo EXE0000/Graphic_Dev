@@ -808,9 +808,13 @@ class WebChatServer:
             return self._send_text(handler, 400, "文件数据无效")
         if not raw:
             return self._send_text(handler, 400, "空文件")
-        tmp = pathlib.Path(tempfile.mkstemp(suffix=suffix)[1])
+        # 用上下文管理临时文件：mkstemp 的 fd 若不关闭，Windows 上文件仍被占用，
+        # 随后 unlink 会抛 PermissionError 直接把响应连接打断（表现为前端 NetworkError）
+        tmp = None
         try:
-            tmp.write_bytes(raw)
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fh:
+                fh.write(raw)
+                tmp = pathlib.Path(fh.name)
             text = attach_mod.extract_text(tmp, max_chars=None, max_pages=400)
             doc = knowledge.add_doc(payload.get("base") or "", name,
                                     suffix.lstrip("."), text,
@@ -818,7 +822,11 @@ class WebChatServer:
         except Exception as e:
             return self._send_text(handler, 400, f"{name}：{e}")
         finally:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return self._send_json(handler, {"doc": doc,
                                          "stats": knowledge.stats(payload.get("base") or "")})
 

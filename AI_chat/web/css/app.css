@@ -1058,7 +1058,28 @@ body.is-resizing { cursor: col-resize; user-select: none; }
   --text-faint: #8b949e;
   --border: #d8dee4;
 }
-:root[data-theme="light"] .send-btn { color: #fff; }
+/* 浅色发送钮：实心 accent + 白箭头；hover/active/focus 都保持强对比，
+   覆盖外壳 hover 的白底（否则白箭头落在白底上会"消失"） */
+:root[data-theme="light"] .send-btn {
+  background: linear-gradient(180deg, #2f9bff, #0a84ff);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(10, 132, 255, .35);
+}
+:root[data-theme="light"] .send-btn:hover {
+  background: linear-gradient(180deg, #4aa8ff, #0b74e0);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(10, 132, 255, .45);
+}
+:root[data-theme="light"] .send-btn:active {
+  background: #0a63c2;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(10, 132, 255, .35);
+}
+:root[data-theme="light"] .send-btn:focus-visible {
+  outline: 2px solid #0a84ff;
+  outline-offset: 2px;
+}
+:root[data-theme="light"] .send-btn.is-blocked { opacity: .45; box-shadow: none; }
 :root[data-theme="light"] .new-chat-btn { background: #1f2328; color: #fff; }
 :root[data-theme="light"] .new-chat-btn:hover { background: #33383d; }
 :root[data-theme="light"] .nav-avatar { background: #e8eaee; color: #57606a; }
