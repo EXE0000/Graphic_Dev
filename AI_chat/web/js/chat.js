@@ -185,6 +185,17 @@
       });
   }
 
+  // token 用量：只显示总消耗，输入/输出明细放进 title 悬停可见
+  function buildUsageHtml(usage) {
+    if (!usage || !usage.total_tokens) return "";
+    var total = Number(usage.total_tokens) || 0;
+    var pt = Number(usage.prompt_tokens) || 0;
+    var ct = Number(usage.completion_tokens) || 0;
+    var tip = "输入 " + pt.toLocaleString() + " · 输出 " + ct.toLocaleString();
+    return '<div class="turn-usage" title="' + tip + '">本次消耗 '
+         + total.toLocaleString() + ' tokens</div>';
+  }
+
   function buildAttachmentsHtml(list) {
     var chips = (list || []).map(function (a) {
       var icon = a.kind === "image" ? "🖼" : "📄";
@@ -207,8 +218,23 @@
       if (!turn) return;
       var index = turn.getAttribute("data-index");
 
+      var verBtn = e.target.closest(".turn-ver");
+      if (verBtn) {
+        if (!verBtn.disabled) sendAction("version", index, verBtn.getAttribute("data-v"));
+        return;
+      }
+
       var delBtn = e.target.closest(".turn-del");
       if (delBtn) { sendAction("delete", index); return; }
+
+      var copyBtn = e.target.closest(".turn-copy");
+      if (copyBtn) { sendAction("copy", index); return; }
+
+      var regenBtn = e.target.closest(".turn-regen");
+      if (regenBtn) { sendAction("regenerate", index); return; }
+
+      var editBtn = e.target.closest(".turn-edit");
+      if (editBtn) { sendAction("edit", index); return; }
 
       var save = e.target.closest(".img-save");
       if (save) {
@@ -225,13 +251,34 @@
     });
   }
 
-  // 助手回答下方的导出按钮
-  function buildExportTools() {
+  // 助手回答下方的操作条：复制 / 重新生成（仅末条）/ 导出
+  function buildExportTools(isLast) {
     var fmts = [["md", "MD"], ["docx", "Word"], ["pdf", "PDF"], ["xlsx", "Excel"]];
-    var btns = fmts.map(function (f) {
+    var btns = '<button class="turn-tool turn-copy">复制</button>';
+    if (isLast) btns += '<button class="turn-tool turn-regen">重新生成</button>';
+    btns += fmts.map(function (f) {
       return '<button class="turn-tool" data-fmt="' + f[0] + '">' + f[1] + '</button>';
     }).join("");
     return '<div class="turn-tools">' + btns + '</div>';
+  }
+
+  // 用户消息下方的「编辑」按钮
+  function buildUserTools() {
+    return '<div class="turn-tools"><button class="turn-tool turn-edit">编辑</button></div>';
+  }
+
+  // 重新生成的多版本对比：‹ n/m › 切换器（与网页端 / 官方客户端同款）
+  function buildVersionSwitcher(t) {
+    var versions = t.versions || [];
+    if (versions.length < 2) return "";
+    var cur = t.version || 0;
+    return '<div class="turn-versions">'
+         + '<button class="turn-ver" data-v="' + (cur - 1) + '"'
+         + (cur <= 0 ? " disabled" : "") + ' title="上一个版本">‹</button>'
+         + '<span class="turn-ver-label">' + (cur + 1) + '/' + versions.length + '</span>'
+         + '<button class="turn-ver" data-v="' + (cur + 1) + '"'
+         + (cur >= versions.length - 1 ? " disabled" : "") + ' title="下一个版本">›</button>'
+         + '</div>';
   }
 
   // 给正文里的图片加一个「保存图片」按钮
@@ -263,9 +310,20 @@
     }
 
     var html = "";
+    var lastAi = -1;
+    (turns || []).forEach(function (t, i) { if (t.role !== "user") lastAi = i; });
     (turns || []).forEach(function (t, idx) {
       var cls  = t.role === "user" ? "turn user" : "turn ai";
-      var name = t.role === "user" ? "你" : "模型";
+      // 助手抬头显示用户配置的昵称/头像（人格），没配置才回退「模型」
+      var roleHtml;
+      if (t.role === "user") {
+        roleHtml = '<div class="role">你</div>';
+      } else {
+        var av = t.persona_avatar || "";
+        var avHtml = "";
+        if (av && av.indexOf("data:") !== 0) avHtml = '<span class="role-avatar-emoji">' + escapeHtml(av) + '</span>';
+        roleHtml = '<div class="role">' + avHtml + escapeHtml(t.persona || "模型") + '</div>';
+      }
 
       var think = "";
       if (t.reasoning && t.reasoning.trim()) {
@@ -282,16 +340,18 @@
         bodyHtml = linkCitations(bodyHtml, t.sources);
       }
 
-      var tools = t.role === "user" ? "" : buildExportTools();
+      var tools = t.role === "user" ? buildUserTools() : buildExportTools(idx === lastAi);
 
       html += '<div class="' + cls + '" data-index="' + idx + '">'
             + '<button class="turn-del" title="删除这条对话">×</button>'
-            + '<div class="role">' + name + '</div>'
+            + roleHtml
             + think
             + '<div class="body">' + bodyHtml + '</div>'
             + atts
+            + (t.role !== "user" ? buildVersionSwitcher(t) : "")
             + tools
             + sources
+            + (t.role !== "user" ? buildUsageHtml(t.usage) : "")
             + '</div>';
     });
 
@@ -400,6 +460,11 @@
   }
 
   bindTurnActions();
+
+  // Esc 停止生成（与网页端一致的快捷键）
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") sendAction("stop", 0);
+  });
 
   /* =======================================================================
      5. 暴露给 Python 调用

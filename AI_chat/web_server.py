@@ -24,6 +24,7 @@ from PySide6.QtCore import QUrl
 import app_paths
 import attachments as attach_mod
 import exporters
+import knowledge
 
 WEB_DIR = app_paths.resource_dir() / "web"
 DATA_DIR = app_paths.data_dir()
@@ -209,6 +210,9 @@ class WebChatServer:
                     "reasoning": message.get("reasoning") or "",
                     "sources": message.get("sources") or [],
                     "streaming": bool(message.get("streaming")),
+                    "usage": message.get("usage") or {},
+                    "versions": message.get("versions") or [],
+                    "version": message.get("version", 0),
                     "texts": message.get("texts") or [],
                     "files": message.get("files") or [],
                     "images": [],
@@ -297,6 +301,16 @@ class WebChatServer:
                 return self._send_text(handler, 403, "无效的访问令牌，请从客户端重新打开。")
             return self._send_page(handler, legacy=True)
 
+        if path == "/kb":
+            if query.get("t", [""])[0] != self.token:
+                return self._send_text(handler, 403, "无效的访问令牌，请从客户端重新打开。")
+            return self._send_kb_page(handler)
+
+        if path.startswith("/api/kb/"):
+            if query.get("t", [""])[0] != self.token:
+                return self._send_text(handler, 403, "forbidden")
+            return self.handle_kb_get(handler, path, query)
+
         if path.startswith("/static/"):
             target = (WEB_DIR / path[len("/static/"):]).resolve()
             if WEB_DIR.resolve() not in target.parents and target != WEB_DIR:
@@ -353,6 +367,18 @@ class WebChatServer:
         if query.get("t", [""])[0] != self.token:
             return self._send_text(handler, 403, "forbidden")
 
+        if parsed.path.startswith("/api/kb/"):
+            return self.handle_kb_post(handler, parsed.path)
+
+        if parsed.path == "/api/persona":
+            try:
+                payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+            except ValueError:
+                return self._send_text(handler, 400, "invalid json")
+            self.controller.set_persona(payload.get("name") or "",
+                                        payload.get("avatar") or "")
+            return self._send_json(handler, {"ok": True})
+
         if parsed.path == "/api/conversations/new":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
             current = query.get("conv", [""])[0]
@@ -386,6 +412,12 @@ class WebChatServer:
             return self.handle_delete_conversation(handler)
         if parsed.path == "/api/chat":
             return self.handle_chat(handler)
+        if parsed.path == "/api/regenerate":
+            return self.handle_regenerate(handler)
+        if parsed.path == "/api/version":
+            return self.handle_version(handler)
+        if parsed.path == "/api/edit":
+            return self.handle_edit(handler)
         if parsed.path == "/api/export_all":
             return self.handle_export_all(handler)
         if parsed.path in ("/api/delete", "/api/delete_batch"):
@@ -442,20 +474,6 @@ class WebChatServer:
         if not text and not (self.attachments.get(conv["id"]) or []):
             return self._send_text(handler, 400, "empty message")
 
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        handler.send_header("Cache-Control", "no-cache")
-        # 没有 Content-Length 也不是 chunked，必须声明 close，
-        # 否则 HTTP/1.1 的客户端会一直等"还有没有数据"
-        handler.send_header("Connection", "close")
-        handler.end_headers()
-        handler.close_connection = True
-
-        def send(event, data):
-            chunk = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-            handler.wfile.write(chunk.encode("utf-8"))
-            handler.wfile.flush()
-
         pending = self.attachments.pop(conv["id"], [])
         texts = [{"name": a["name"], "text": a.get("text", "")}
                  for a in pending if a["kind"] == "text"]
@@ -473,16 +491,46 @@ class WebChatServer:
             self._save_conversations()
 
         messages = self._build_messages(conv)
+        return self._stream_response(handler, conv, messages)
+
+    def _stream_response(self, handler, conv, messages, reuse=None):
+        """SSE 流式回答核心：handle_chat / regenerate / edit 共用。
+
+        调用前 conv 必须已含本轮 user 消息；这里追加 assistant 占位、流式收完、
+        限流落盘，刷新或切走都能看到进度。
+        reuse 传入既有 assistant 消息时（重新生成），不新建占位，而是把本次
+        结果作为新版本追加进它的 versions，旧版本保留供对比。
+        """
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        handler.send_header("Cache-Control", "no-cache")
+        # 没有 Content-Length 也不是 chunked，必须声明 close，
+        # 否则 HTTP/1.1 的客户端会一直等"还有没有数据"
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        handler.close_connection = True
+
+        def send(event, data):
+            chunk = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+            handler.wfile.write(chunk.encode("utf-8"))
+            handler.wfile.flush()
 
         # 先把「正在生成」的空回答写进会话：这样切换对话、刷新页面都能看到它
-        assistant = {"role": "assistant", "content": "", "reasoning": "",
-                     "sources": [], "streaming": True}
+        if reuse is not None:
+            assistant = reuse
+            assistant.setdefault("versions", [])
+            assistant["streaming"] = True
+        else:
+            assistant = {"role": "assistant", "content": "", "reasoning": "",
+                         "sources": [], "usage": {}, "streaming": True,
+                         "versions": [], "version": 0}
+            with self._lock:
+                conv["messages"].append(assistant)
         with self._lock:
-            conv["messages"].append(assistant)
             self._save_conversations()
             self._active += 1
 
-        final = {"content": "", "reasoning": "", "sources": []}
+        final = {"content": "", "reasoning": "", "sources": [], "usage": {}}
         client_gone = False
         last_save = time.time()
 
@@ -507,6 +555,7 @@ class WebChatServer:
                 assistant["content"] = final["content"]
                 assistant["reasoning"] = final["reasoning"]
                 assistant["sources"] = final["sources"]
+                assistant["usage"] = final["usage"]
                 conv["updated"] = now
                 self._save_conversations()
 
@@ -529,6 +578,10 @@ class WebChatServer:
                     emit("sources", {"items": data})
                 elif kind == "image":
                     emit("image", {"markdown": data})
+                elif kind == "usage":
+                    final["usage"] = data or {}
+                    persist()
+                    emit("usage", {"usage": data})
                 elif kind == "error":
                     emit("error", {"text": data})
                     break
@@ -543,11 +596,28 @@ class WebChatServer:
 
         with self._lock:
             if final["content"] or final["reasoning"]:
-                assistant["content"] = final["content"]
-                assistant["reasoning"] = final["reasoning"]
-                assistant["sources"] = final["sources"]
+                ver = {"content": final["content"], "reasoning": final["reasoning"],
+                       "sources": final["sources"], "usage": final["usage"]}
+                versions = assistant.setdefault("versions", [])
+                versions.append(ver)
+                assistant["version"] = len(versions) - 1
+                assistant["content"] = ver["content"]
+                assistant["reasoning"] = ver["reasoning"]
+                assistant["sources"] = ver["sources"]
+                assistant["usage"] = ver["usage"]
                 assistant.pop("streaming", None)
                 conv["updated"] = time.time()
+            elif reuse is not None:
+                # 重新生成但什么都没产出：回滚到上一个活跃版本，别弄丢旧回答
+                versions = assistant.get("versions") or []
+                v = assistant.get("version", 0)
+                if versions and 0 <= v < len(versions):
+                    old = versions[v]
+                    assistant["content"] = old["content"]
+                    assistant["reasoning"] = old["reasoning"]
+                    assistant["sources"] = old["sources"]
+                    assistant["usage"] = old["usage"]
+                assistant.pop("streaming", None)
             else:
                 # 什么都没生成出来（比如被立刻取消），别留一个空气泡
                 conv["messages"] = [m for m in conv["messages"] if m is not assistant]
@@ -557,11 +627,242 @@ class WebChatServer:
             self._active = max(0, self._active - 1)
         emit("done", {"ok": True})
 
+    def handle_regenerate(self, handler):
+        """重新生成：丢弃指定回答（默认末条）及其后内容，用上一条 user 重跑。"""
+        try:
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+        except ValueError:
+            return self._send_text(handler, 400, "invalid json")
+
+        cfg = self.controller.web_config()
+        if not cfg.get("ready"):
+            return self._send_text(handler, 400, cfg.get("reason") or "配置不完整")
+        # 重新生成会截断历史，生成中动手会把正在写的那条冲掉
+        if self._active > 0:
+            return self._send_text(handler, 409, "正在生成中，请先停止")
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        conv = self.get_conversation(query.get("conv", [""])[0] or
+                                     str(payload.get("conv") or ""))
+        messages = conv["messages"]
+
+        index = payload.get("index")
+        if index is None:
+            index = next((i for i in range(len(messages) - 1, -1, -1)
+                          if messages[i].get("role") == "assistant"), None)
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return self._send_text(handler, 400, "没有可重新生成的回答")
+        if not (0 <= index < len(messages)) or messages[index].get("role") != "assistant":
+            return self._send_text(handler, 400, "没有可重新生成的回答")
+        user_index = index - 1
+        if user_index < 0 or messages[user_index].get("role") != "user":
+            return self._send_text(handler, 400, "找不到对应的提问")
+
+        with self._lock:
+            # 保留被重生的回答本体（版本累加供对比），只丢弃它之后的跟进消息
+            assistant = messages[index]
+            conv["messages"] = messages[:index + 1]
+            conv["updated"] = time.time()
+            self._save_conversations()
+
+        # 提示词里不能带上正在被重生的旧回答，否则模型会照抄自己
+        prompt_conv = dict(conv, messages=conv["messages"][:index])
+        return self._stream_response(handler, conv, self._build_messages(prompt_conv),
+                                     reuse=assistant)
+
+    def handle_version(self, handler):
+        """切换某条回答的活跃版本（重新生成的历史结果对比）。"""
+        try:
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+        except ValueError:
+            return self._send_text(handler, 400, "invalid json")
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        conv = self.get_conversation(query.get("conv", [""])[0] or
+                                     str(payload.get("conv") or ""))
+        messages = conv["messages"]
+        try:
+            index = int(payload.get("index"))
+            v = int(payload.get("version"))
+        except (TypeError, ValueError):
+            return self._send_text(handler, 400, "invalid index/version")
+        if not (0 <= index < len(messages)) or messages[index].get("role") != "assistant":
+            return self._send_text(handler, 400, "没有这条回答")
+        versions = messages[index].get("versions") or []
+        if not (0 <= v < len(versions)):
+            return self._send_text(handler, 400, "没有这个版本")
+        with self._lock:
+            m = messages[index]
+            old = versions[v]
+            m["version"] = v
+            m["content"] = old["content"]
+            m["reasoning"] = old["reasoning"]
+            m["sources"] = old["sources"]
+            m["usage"] = old["usage"]
+            conv["updated"] = time.time()
+            self._save_conversations()
+        return self._send_json(handler, {"ok": True, "version": v})
+
+    # ---------------- 知识库（Agentic RAG）投喂 / 管理 ----------------
+    def _kb_embedder(self, base_id):
+        base = knowledge.get_base(base_id)
+        model = (base or {}).get("embed_model") or ""
+        cfg = self.controller.get_api_config()
+        if not (model and cfg):
+            return None
+        url, key = cfg
+        return lambda texts: knowledge.embed_texts(texts, url, key, model)
+
+    def _send_kb_page(self, handler):
+        path = WEB_DIR / "kb.html"
+        if not path.is_file():
+            return self._send_text(handler, 404, "not found")
+        html = path.read_text(encoding="utf-8")
+        v = str(self.started_at)
+        html = html.replace('href="css/kb.css"', f'href="/static/css/kb.css?v={v}"')
+        html = html.replace('src="js/kb.js"', f'src="/static/js/kb.js?v={v}"')
+        data = html.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        handler.wfile.write(data)
+
+    def handle_kb_get(self, handler, path, query):
+        base = query.get("base", [""])[0]
+        if path == "/api/kb/bases":
+            return self._send_json(handler, {"items": knowledge.list_bases(),
+                                             "active": knowledge.get_active()})
+        if path == "/api/kb/docs":
+            return self._send_json(handler, {"items": knowledge.list_docs(base)})
+        if path == "/api/kb/chunks":
+            return self._send_json(handler, {"items": knowledge.list_chunks(
+                base, query.get("doc", [""])[0] or None,
+                limit=int(query.get("limit", ["200"])[0]),
+                offset=int(query.get("offset", ["0"])[0]))})
+        if path == "/api/kb/stats":
+            return self._send_json(handler, knowledge.stats(base))
+        if path == "/api/kb/search":
+            return self._send_json(handler, {"items": knowledge.search(
+                base, query.get("q", [""])[0], k=8,
+                embedder=self._kb_embedder(base))})
+        return self._send_text(handler, 404, "not found")
+
+    def handle_kb_post(self, handler, path):
+        try:
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+        except ValueError:
+            return self._send_text(handler, 400, "invalid json")
+        base = payload.get("base") or ""
+        if path == "/api/kb/base/create":
+            bid = knowledge.create_base(payload.get("name") or "",
+                                        payload.get("embed_model") or "")
+            return self._send_json(handler, {"id": bid,
+                                             "items": knowledge.list_bases(),
+                                             "active": knowledge.get_active()})
+        if path == "/api/kb/base/rename":
+            knowledge.rename_base(payload.get("id") or "", payload.get("name") or "")
+            return self._send_json(handler, {"items": knowledge.list_bases()})
+        if path == "/api/kb/base/delete":
+            knowledge.delete_base(payload.get("id") or "")
+            return self._send_json(handler, {"items": knowledge.list_bases(),
+                                             "active": knowledge.get_active()})
+        if path == "/api/kb/base/active":
+            knowledge.set_active(payload.get("id") or "")
+            return self._send_json(handler, {"active": knowledge.get_active()})
+        if path == "/api/kb/base/embed":
+            knowledge.set_base_embed(payload.get("id") or "",
+                                     payload.get("embed_model") or "")
+            return self._send_json(handler, {"ok": True})
+        if path == "/api/kb/upload":
+            return self._kb_upload(handler, payload)
+        if path == "/api/kb/doc/delete":
+            knowledge.delete_doc(payload.get("id") or "")
+            return self._send_json(handler, {"stats": knowledge.stats(base)})
+        if path == "/api/kb/chunk/add":
+            cid = knowledge.add_chunk(base, payload.get("heading") or "",
+                                      payload.get("text") or "",
+                                      embedder=self._kb_embedder(base))
+            return self._send_json(handler, {"id": cid,
+                                             "stats": knowledge.stats(base)})
+        if path == "/api/kb/chunk/update":
+            knowledge.update_chunk(int(payload.get("id") or 0),
+                                   payload.get("heading") or "",
+                                   payload.get("text") or "",
+                                   embedder=self._kb_embedder(base))
+            return self._send_json(handler, {"ok": True})
+        if path == "/api/kb/chunk/delete":
+            knowledge.delete_chunk(int(payload.get("id") or 0))
+            return self._send_json(handler, {"stats": knowledge.stats(base)})
+        return self._send_text(handler, 404, "not found")
+
+    def _kb_upload(self, handler, payload):
+        """投喂文档：base64 落临时文件 → 全文抽取 → 切块建索引。"""
+        name = payload.get("name") or "document.txt"
+        suffix = pathlib.Path(name).suffix.lower() or ".txt"
+        try:
+            raw = base64.b64decode(payload.get("data") or "")
+        except (ValueError, TypeError):
+            return self._send_text(handler, 400, "文件数据无效")
+        if not raw:
+            return self._send_text(handler, 400, "空文件")
+        tmp = pathlib.Path(tempfile.mkstemp(suffix=suffix)[1])
+        try:
+            tmp.write_bytes(raw)
+            text = attach_mod.extract_text(tmp, max_chars=None, max_pages=400)
+            doc = knowledge.add_doc(payload.get("base") or "", name,
+                                    suffix.lstrip("."), text,
+                                    embedder=self._kb_embedder(payload.get("base") or ""))
+        except Exception as e:
+            return self._send_text(handler, 400, f"{name}：{e}")
+        finally:
+            tmp.unlink(missing_ok=True)
+        return self._send_json(handler, {"doc": doc,
+                                         "stats": knowledge.stats(payload.get("base") or "")})
+
+    def handle_edit(self, handler):
+        """编辑用户消息并重发：截断到该条、替换正文（保留附件），再重跑回答。"""
+        try:
+            payload = json.loads(getattr(handler, "_body", b"") or b"{}")
+        except ValueError:
+            return self._send_text(handler, 400, "invalid json")
+
+        text = (payload.get("message") or "").strip()
+        cfg = self.controller.web_config()
+        if not cfg.get("ready"):
+            return self._send_text(handler, 400, cfg.get("reason") or "配置不完整")
+        if self._active > 0:
+            return self._send_text(handler, 409, "正在生成中，请先停止")
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        conv = self.get_conversation(query.get("conv", [""])[0] or
+                                     str(payload.get("conv") or ""))
+        messages = conv["messages"]
+        try:
+            index = int(payload.get("index"))
+        except (TypeError, ValueError):
+            return self._send_text(handler, 400, "invalid index")
+        if not (0 <= index < len(messages)) or messages[index].get("role") != "user":
+            return self._send_text(handler, 400, "只能编辑用户消息")
+        if not text and not (messages[index].get("texts") or messages[index].get("images")):
+            return self._send_text(handler, 400, "empty message")
+
+        with self._lock:
+            conv["messages"] = messages[:index + 1]
+            conv["messages"][index]["content"] = text
+            conv["updated"] = time.time()
+            self._save_conversations()
+
+        return self._stream_response(handler, conv, self._build_messages(conv))
+
     def _build_messages(self, conv=None):
         """把会话历史拼成 API messages（附件按桌面端的规则展开）。"""
         messages = [{"role": "system",
                      "content": self.controller.system_prompt()
-                                + self.controller._identity_note()}]
+                                + self.controller._identity_note()
+                                + self.controller.persona_note()}]
         conv = conv or self.get_conversation("")
         for m in conv["messages"]:
             texts = m.get("texts") or []
@@ -614,6 +915,15 @@ class WebChatServer:
                 "reasoning": message.get("reasoning") or "",
                 "sources": message.get("sources") or [],
                 "streaming": bool(message.get("streaming")),
+                "usage": message.get("usage") or {},
+                "versions": [
+                    {"content": self._webify(v.get("content") or ""),
+                     "reasoning": v.get("reasoning") or "",
+                     "sources": v.get("sources") or [],
+                     "usage": v.get("usage") or {}}
+                    for v in (message.get("versions") or [])
+                ],
+                "version": message.get("version", 0),
                 "attachments": self._public_attachments(message),
             })
         return turns

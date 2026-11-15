@@ -362,6 +362,51 @@ img { max-width: 100%; }
   color: var(--accent);
 }
 
+/* token 用量：低调的一行灰字，悬停看输入/输出明细 */
+.turn-usage {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--role);
+  cursor: default;
+}
+
+/* 助手人格抬头：昵称 + 头像 */
+.role { display: flex; align-items: center; gap: 6px; }
+.role-avatar-emoji { font-size: 14px; line-height: 1; }
+
+/* 重新生成多版本对比切换器 ‹ n/m ›（常驻，不随悬停隐藏） */
+.turn-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 8px;
+}
+.turn-ver {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--tool-border);
+  border-radius: 8px;
+  background: var(--tool-bg);
+  color: var(--tool-text);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.turn-ver:hover:not(:disabled) {
+  background: var(--attach-hover-bg);
+  color: var(--accent);
+}
+.turn-ver:disabled { opacity: .4; cursor: default; }
+.turn-ver-label {
+  min-width: 34px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--role);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 /* ---------- 5.35 图片保存按钮 ---------- */
 .img-wrap {
   position: relative;

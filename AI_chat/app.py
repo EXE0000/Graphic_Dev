@@ -12,12 +12,12 @@ from urllib.parse import quote, unquote
 import requests
 
 from PySide6.QtCore import (QEvent, QObject, QSettings, QThread, QTimer,
-                            Qt, QUrl, Signal)
+                            Qt, QUrl, Signal, QPropertyAnimation, QEasingCurve)
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHeaderView,
-                               QMainWindow, QMessageBox, QPushButton,
-                               QTableWidgetItem)
+                               QInputDialog, QMainWindow, QMessageBox, QPushButton,
+                               QTableWidgetItem, QGraphicsOpacityEffect)
 
 from UI.main_window import Ui_MainWindow
 from model_dialog import ModelPickerDialog
@@ -27,6 +27,7 @@ import attachments as attach_mod
 import exporters
 import fonts
 import image_gen
+import knowledge
 import secrets_store
 import theme
 import web_server
@@ -269,6 +270,41 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+# 本地教材/知识库检索工具（Agentic RAG）：模型自主决定何时查、查什么、查几轮
+KB_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge",
+        "description": (
+            "检索用户导入的本地教材/讲义/知识点知识库。当问题涉及课程内容、"
+            "定理定义、公式推导、概念解释，或用户提到「书上/课件/教材」时调用。"
+            "可拆成多个子查询多次调用以覆盖不同章节。与课程无关的闲聊不要调用。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "检索关键词，用教材术语，例如「夹逼定理 条件 结论」",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "本次取几个知识块，范围 1-8，默认 5",
+                    "minimum": 1,
+                    "maximum": 8,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+KB_NOTE = (
+    "\n\n【本地知识库】你接入了用户导入的教材/讲义知识库，可用 search_knowledge 工具检索。"
+    "回答课程相关问题前先检索；引用时注明来源（文档名·章节），"
+    "例如「据《高等数学讲义》·夹逼定理」。检索不到就如实说明知识库未覆盖，不要编造。"
+)
+
 
 class CheckCellFilter(QObject):
     def __init__(self, table, column, on_toggle):
@@ -473,10 +509,11 @@ class ChatWorker(QThread):
     sources = Signal(list)         # 搜索来源 [{title, url}]
     reset_stream = Signal()        # 要求前端清空当前流式气泡（决定搜索后重新作答）
     image_generated = Signal(str)  # 生成好一张图，通知前端立刻显示
+    usage = Signal(dict)           # 本次回答的 token 用量（多轮工具调用累加）
 
     def __init__(self, url, key, model, history, use_search=False, search_key="",
                  search_provider=DEFAULT_PROVIDER, reasoning_level="medium",
-                 image_config=None):
+                 image_config=None, kb_base=None, kb_embed_model=""):
         super().__init__()
         self.url = url
         self.key = key
@@ -487,7 +524,11 @@ class ChatWorker(QThread):
         self.search_provider = search_provider
         self.reasoning_level = reasoning_level
         self.image_config = image_config or None
+        self.kb_base = kb_base or None
+        self.kb_embed_model = kb_embed_model or ""
         self.generated_images = []
+        # 累加器不能叫 self.usage：实例属性会遮蔽同名 Signal，导致 .connect/.emit 报 dict 错
+        self._usage = {}
         self._thinking_fallback = False
         self._stopped = False
         self._sources_count = 0
@@ -498,6 +539,17 @@ class ChatWorker(QThread):
     @property
     def stopped(self):
         return self._stopped
+
+    def _accumulate_usage(self, usage):
+        """累加各轮 token 用量：多轮工具调用每轮都计费，求和才是真实开销。"""
+        if not isinstance(usage, dict):
+            return
+        pt = usage.get("prompt_tokens") or 0
+        ct = usage.get("completion_tokens") or 0
+        tt = usage.get("total_tokens") or (pt + ct)
+        self._usage["prompt_tokens"] = self._usage.get("prompt_tokens", 0) + pt
+        self._usage["completion_tokens"] = self._usage.get("completion_tokens", 0) + ct
+        self._usage["total_tokens"] = self._usage.get("total_tokens", 0) + tt
 
     def run(self):
         messages = list(self.history)
@@ -510,6 +562,8 @@ class ChatWorker(QThread):
                 messages = self._annotate_no_search(messages)
 
             content, reasoning, _ = self._stream_round(messages)
+            if self._usage:
+                self.usage.emit(dict(self._usage))
             self.finished.emit(self._ensure_content(self._with_images(content)),
                                reasoning)
         except requests.exceptions.ReadTimeout:
@@ -588,13 +642,31 @@ class ChatWorker(QThread):
 
 
     def _tool_defs(self):
-        """当前可用的工具列表（联网搜索 / 文生图）。"""
+        """当前可用的工具列表（联网搜索 / 文生图 / 本地知识库）。"""
         defs = []
         if self.use_search and self.search_key:
             defs.append(WEB_SEARCH_TOOL)
         if self.image_config:
             defs.append(IMAGE_TOOL)
+        if self.kb_base:
+            defs.append(KB_TOOL)
         return defs
+
+    def _kb_embedder(self):
+        """配置了嵌入模型才走向量增强，否则纯 BM25（省电池、零依赖）。"""
+        if not (self.kb_base and self.kb_embed_model):
+            return None
+        return lambda texts: knowledge.embed_texts(
+            texts, self.url, self.key, self.kb_embed_model)
+
+    def _annotate_kb(self, messages):
+        messages = list(messages)
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {"role": "system",
+                           "content": messages[0]["content"] + KB_NOTE}
+        else:
+            messages.insert(0, {"role": "system", "content": KB_NOTE.strip()})
+        return messages
 
     def _with_images(self, text):
         """把生成过的图片拼进最终回答。"""
@@ -621,8 +693,12 @@ class ChatWorker(QThread):
             self.search_note.emit("正在判断是否需要联网搜索…")
         else:
             messages[:] = self._annotate_no_search(messages)
-            if self.image_config:
-                self.search_note.emit("正在判断是否需要生成图片…")
+        if self.kb_base:
+            messages[:] = self._annotate_kb(messages)
+            if not searching:
+                self.search_note.emit("已接入本地知识库，模型按需检索…")
+        if self.image_config and not searching and not self.kb_base:
+            self.search_note.emit("正在判断是否需要生成图片…")
 
         for round_no in range(MAX_SEARCH_ROUNDS):
             if self._stopped:
@@ -638,12 +714,17 @@ class ChatWorker(QThread):
             if not calls:
                 if round_no == 0:
                     self.search_note.emit("模型判断无需调用工具，直接作答")
+                if self._usage:
+                    self.usage.emit(dict(self._usage))
                 self.finished.emit(
                     self._ensure_content(self._with_images(content)), reasoning)
                 return True
 
             has_image_call = any(
                 (c.get("function") or {}).get("name") == "generate_image"
+                for c in calls)
+            has_kb_call = any(
+                (c.get("function") or {}).get("name") == "search_knowledge"
                 for c in calls)
 
             # 只有已经流出了"答案正文"才清屏；思考过程保留
@@ -652,6 +733,9 @@ class ChatWorker(QThread):
 
             if has_image_call:
                 self.search_note.emit("正在生成图片…")
+            elif has_kb_call and not searching:
+                self.search_note.emit(
+                    "模型决定检索知识库…" if round_no == 0 else "模型决定补充检索知识库…")
             else:
                 self.search_note.emit(
                     "模型决定联网搜索…" if round_no == 0 else "模型决定补充检索…")
@@ -672,9 +756,45 @@ class ChatWorker(QThread):
 
         # 轮数用尽：去掉 tools 强制收尾
         final_content, final_reasoning, _ = self._stream_round(messages)
+        if self._usage:
+            self.usage.emit(dict(self._usage))
         self.finished.emit(self._ensure_content(self._with_images(final_content)),
                            final_reasoning)
         return True
+
+    def _run_kb_tool(self, call, args, messages):
+        """本地知识库检索：把命中的知识块带来源喂回模型，供其引用作答。"""
+        query = (args.get("query") or "").strip()
+        if not query:
+            return
+        try:
+            want = int(args.get("max_results") or 5)
+        except (TypeError, ValueError):
+            want = 5
+        want = max(1, min(want, 8))
+        self.search_note.emit(f"检索知识库「{query}」")
+        tid = call.get("id", "")
+        try:
+            hits = knowledge.search(self.kb_base, query, k=want,
+                                    embedder=self._kb_embedder())
+        except Exception as e:
+            messages.append({"role": "tool", "tool_call_id": tid,
+                             "content": f"知识库检索失败：{e}"})
+            return
+        if not hits:
+            messages.append({"role": "tool", "tool_call_id": tid,
+                             "content": "知识库中没有匹配内容。请基于已有知识作答，"
+                                        "并说明知识库未覆盖该问题。"})
+            return
+        lines = []
+        for i, h in enumerate(hits, 1):
+            src = h.get("doc_name") or "知识库"
+            if h.get("heading"):
+                src += f"·{h['heading']}"
+            lines.append(f"[KB:{i}] 来源：{src}\n{h['text']}")
+        self.search_note.emit(f"知识库命中 {len(hits)} 个知识块")
+        messages.append({"role": "tool", "tool_call_id": tid,
+                         "content": "\n\n".join(lines)})
 
     def _execute_tools(self, calls, messages):
         for call in calls:
@@ -688,6 +808,9 @@ class ChatWorker(QThread):
             name = (call.get("function") or {}).get("name") or "web_search"
             if name == "generate_image":
                 self._run_image_tool(call, args, messages)
+                continue
+            if name == "search_knowledge":
+                self._run_kb_tool(call, args, messages)
                 continue
 
             query = (args.get("query") or "").strip()
@@ -816,6 +939,23 @@ class ChatWorker(QThread):
             if m.get("role") == "user":
                 query = m["content"]
                 break
+        # 模型不支持工具调用时的降级：有知识库就直接检索注入，保证 grounding
+        if self.kb_base and not (self.use_search and self.search_key):
+            try:
+                hits = knowledge.search(self.kb_base, query, k=PREFETCH_RESULTS,
+                                        embedder=self._kb_embedder())
+                if hits:
+                    block = "\n\n【知识库检索结果】\n" + "\n\n".join(
+                        f"[KB:{i}] {h.get('doc_name') or '知识库'}"
+                        f"{'·' + h['heading'] if h.get('heading') else ''}\n{h['text']}"
+                        for i, h in enumerate(hits, 1))
+                    if messages and messages[0].get("role") == "system":
+                        messages[0] = {"role": "system",
+                                       "content": messages[0]["content"] + block}
+                    self.search_note.emit(f"已检索知识库 {len(hits)} 个知识块")
+            except Exception as e:
+                self.search_note.emit(f"知识库检索失败：{e}")
+            return messages
         try:
             results = search_web(self.search_key, query,
                                  max_results=PREFETCH_RESULTS,
@@ -835,7 +975,8 @@ class ChatWorker(QThread):
     # ---------- 流式请求：正文、思考、工具调用一起处理 ----------
     def _stream_round(self, messages, tools=False):
         """跑一次流式请求，返回 (content, reasoning, tool_calls)。"""
-        payload = {"model": self.model, "messages": messages, "stream": True}
+        payload = {"model": self.model, "messages": messages, "stream": True,
+                   "stream_options": {"include_usage": True}}
         defs = self._tool_defs() if tools else []
         if defs:
             payload["tools"] = defs
@@ -859,12 +1000,14 @@ class ChatWorker(QThread):
                 timeout=(15, 600),    # (连接超时, 读取超时)：思考久也不会被掐断
             )
 
-        # 网关不认思考参数时，去掉它重试一次
+        # 网关不认思考参数或 stream_options 时，去掉它们重试一次（用量是可选的）
         resp = post(payload)
-        if resp.status_code == 400 and thinking:
-            self._thinking_fallback = True
-            for key in thinking:
-                payload.pop(key, None)
+        if resp.status_code == 400 and (thinking or "stream_options" in payload):
+            if thinking:
+                self._thinking_fallback = True
+                for key in thinking:
+                    payload.pop(key, None)
+            payload.pop("stream_options", None)
             resp.close()
             resp = post(payload)
 
@@ -887,6 +1030,9 @@ class ChatWorker(QThread):
                     obj = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+
+                # 用量在最后一个 choices 为空的 chunk 里下发，必须在跳过前接住
+                self._accumulate_usage(obj.get("usage"))
 
                 choices = obj.get("choices") or []
                 if not choices:
@@ -948,11 +1094,20 @@ class ModelsWorker(QThread):
 
 class MainWindow(QMainWindow, Ui_MainWindow):
     probe_requested = Signal()
+    # 网页 HTTP 线程不能直接碰 GUI / WebEngine：用信号排队回 GUI 线程
+    _persona_request = Signal(str, str)
+    _render_request = Signal()
+
     def __init__(self):
         super().__init__()
         self.setupUi(self)
+        self.tabWidget.currentChanged.connect(self._animate_tab_page)
+        self._tab_anim = None
+        self._persona_request.connect(self._apply_persona)
+        self._render_request.connect(self._render_chat)
 
         self.chat_history = []
+        self._regen_target = None      # 重新生成时保留旧回答、累加版本的那条下标
         self._pending = False
         self._web_ready = False
         self._initial_loaded = False
@@ -962,6 +1117,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._attachments = []
         self._streaming = False
         self._settings = QSettings(ORG, APP_NAME)
+        self.persona = self._load_persona()   # 用户给助手起的昵称/头像，注入模型人格
         self._reasoning_caps = {}         # "url|model" -> "yes"/"no"
         self._probe_worker = None
         self.probe_requested.connect(self._maybe_probe_reasoning)
@@ -1149,6 +1305,29 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         return "\n\n".join(part for part in parts if part.strip())
 
+    def _animate_tab_page(self, index):
+        """标签页切换的贝塞尔淡入（OutBack 弹簧曲线）。
+
+        WebEngine 页跳过：给 QWebEngineView 挂 QGraphicsOpacityEffect 会干扰
+        它的合成层，可能出现空白帧，宁可不做动效也要保证聊天页稳定。
+        """
+        widget = self.tabWidget.widget(index)
+        if widget is None or widget.isAncestorOf(self.textBrowser):
+            return
+        effect = widget.graphicsEffect()
+        if not isinstance(effect, QGraphicsOpacityEffect):
+            effect = QGraphicsOpacityEffect(widget)
+            widget.setGraphicsEffect(effect)
+        if self._tab_anim is not None:
+            self._tab_anim.stop()
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(280)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve(QEasingCurve.Type.OutBack))
+        self._tab_anim = anim
+        anim.start()
+
     def closeEvent(self, event):
         # 生成中直接关窗口会让 QThread 被 GC —— Qt 会 abort（进程崩溃）。
         # 先让 worker 停下来并等它退出。
@@ -1208,6 +1387,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self._export_message(index, parts[3])
         elif parts[1] == "saveimage" and len(parts) >= 4:
             self._save_image(unquote(parts[3]))
+        elif parts[1] == "copy":
+            self._copy_turn(index)
+        elif parts[1] == "regenerate":
+            self._regenerate_turn(index)
+        elif parts[1] == "version" and len(parts) >= 4:
+            self._switch_version(index, parts[3])
+        elif parts[1] == "edit":
+            self._edit_turn(index)
+        elif parts[1] == "stop":
+            if self._streaming and self.worker is not None:
+                self.worker.cancel()
+                self.statusbar.showMessage("正在停止…", 3000)
 
     def _delete_turn(self, index: int):
         if self._streaming:
@@ -1253,6 +1444,91 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._save_history()
         self._render_chat()
         self.statusbar.showMessage("已删除这条对话", 3000)
+
+    def _copy_turn(self, index: int):
+        """复制整条消息到系统剪贴板（官方客户端标配）。"""
+        if not (0 <= index < len(self.chat_history)):
+            return
+        content = (self.chat_history[index].get("content") or "").strip()
+        if not content:
+            self.statusbar.showMessage("这条消息没有可复制的内容", 3000)
+            return
+        QApplication.clipboard().setText(content)
+        self.statusbar.showMessage("已复制这条消息", 3000)
+
+    def _regenerate_turn(self, index: int):
+        """丢弃指定回答及其后内容，用上一条提问重跑。"""
+        if self._streaming:
+            self.statusbar.showMessage("生成中不能重新生成，请先停止", 3000)
+            return
+        if not (0 <= index < len(self.chat_history)):
+            return
+        if self.chat_history[index].get("role") != "assistant" or index == 0 \
+                or self.chat_history[index - 1].get("role") != "user":
+            return
+        sc = self._send_config()
+        if sc is None:
+            return
+        # 保留被重生的回答本体（版本累加供对比），只丢弃它之后的跟进消息
+        for i in range(len(self.chat_history) - 1, index, -1):
+            removed = self.chat_history.pop(i)
+            for f in (removed.get("files") or []):
+                attach_mod.delete_stored(f.get("path"))
+        self._regen_target = index
+        self._save_history()
+        # 提示词里不能带上正在被重生的旧回答，否则模型会照抄自己
+        self._start_stream(sc, history=self.chat_history[:index])
+
+    def _switch_version(self, index: int, raw_version):
+        """切换某条回答的活跃版本（重新生成的历史结果对比）。"""
+        if not (0 <= index < len(self.chat_history)):
+            return
+        m = self.chat_history[index]
+        if m.get("role") != "assistant":
+            return
+        versions = m.get("versions") or []
+        try:
+            v = int(raw_version)
+        except (TypeError, ValueError):
+            return
+        if not (0 <= v < len(versions)):
+            return
+        old = versions[v]
+        m["version"] = v
+        m["content"] = old["content"]
+        m["reasoning"] = old["reasoning"]
+        m["sources"] = old["sources"]
+        m["usage"] = old["usage"]
+        self._save_history()
+        self._render_chat()
+
+    def _edit_turn(self, index: int):
+        """编辑用户消息：截断到本条、替换正文（保留附件），再重跑回答。"""
+        if self._streaming:
+            self.statusbar.showMessage("生成中不能编辑，请先停止", 3000)
+            return
+        if not (0 <= index < len(self.chat_history)):
+            return
+        if self.chat_history[index].get("role") != "user":
+            return
+        old = self.chat_history[index].get("content") or ""
+        text, ok = QInputDialog.getMultiLineText(self, "编辑消息", "修改后重新发送：", old)
+        if not ok:
+            return
+        text = text.strip()
+        if not text:
+            self.statusbar.showMessage("消息不能为空", 3000)
+            return
+        sc = self._send_config()
+        if sc is None:
+            return
+        for i in range(len(self.chat_history) - 1, index, -1):
+            removed = self.chat_history.pop(i)
+            for f in (removed.get("files") or []):
+                attach_mod.delete_stored(f.get("path"))
+        self.chat_history[index]["content"] = text
+        self._save_history()
+        self._start_stream(sc)
 
     def _save_image(self, src: str):
         """把聊天里的图片另存到用户选的位置。"""
@@ -1351,10 +1627,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             QMessageBox.critical(self, "页面加载失败", f"无法加载 {WEB_DIR / 'chat.html'}")
 
     def _render_chat(self):
+        # 兜底：任何非 GUI 线程（如 Web HTTP 线程）触发的重渲染都排队回 GUI 线程，
+        # 避免跨线程调用 QWebEnginePage.runJavaScript 导致 SIGTRAP 闪退
+        if threading.current_thread() is not threading.main_thread():
+            self._render_request.emit()
+            return
         if not self._web_ready:
             return
         turns = []
-        for m in self.chat_history:
+        for i, m in enumerate(self.chat_history):
+            # 重新生成流式期间隐藏旧回答，避免和新流式气泡同时出现两条
+            if self._streaming and self._regen_target == i:
+                continue
             files = [
                 {"name": f.get("name", ""),
                  "kind": f.get("kind", "text"),
@@ -1366,6 +1650,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "content": m["content"].strip(),
                 "reasoning": (m.get("reasoning") or "").strip(),
                 "sources": m.get("sources") or [],
+                "usage": m.get("usage") or {},
+                "versions": m.get("versions") or [],
+                "version": m.get("version", 0),
+                "persona": (self.persona or {}).get("name") or "",
+                "persona_avatar": (self.persona or {}).get("avatar") or "",
                 "attachments": files,
             })
         script = f"renderChat({json.dumps(turns, ensure_ascii=True)}, {"true" if self._pending else "false"});"
@@ -1852,6 +2141,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "content": message.get("content") or "",
                 "reasoning": message.get("reasoning") or "",
                 "sources": message.get("sources") or [],
+                "usage": message.get("usage") or {},
+                "versions": message.get("versions") or [],
+                "version": message.get("version", 0),
             }
             texts = message.get("texts") or []
             if texts:
@@ -1887,6 +2179,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "content": message.get("content") or "",
                 "reasoning": message.get("reasoning") or "",
                 "sources": message.get("sources") or [],
+                "usage": message.get("usage") or {},
+                "versions": message.get("versions") or [],
+                "version": message.get("version", 0),
                 "texts": message.get("texts") or [],
                 "files": message.get("files") or [],
             })
@@ -1966,6 +2261,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                                      Qt.ConnectionType.QueuedConnection,
                                      Q_ARG(bool, bool(thinking)))
 
+    def _kb_params(self):
+        """当前激活的知识库 → ChatWorker 参数；没激活就不启用 RAG。"""
+        bid = knowledge.get_active()
+        base = knowledge.get_base(bid) if bid else None
+        if not base:
+            return {}
+        return {"kb_base": bid, "kb_embed_model": base.get("embed_model") or ""}
+
     def web_config(self):
         """给网页看的配置状态（不含密钥）。"""
         cfg = self.get_api_config()
@@ -1991,7 +2294,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             "reasoning_note": self._reasoning_state()[1],
             "reasoning_probe": self._probe_state(),
             "exports": list(exporters.EXPORTERS.keys()),
+            "kb": self._kb_status(),
         }
+
+    def _kb_status(self):
+        bid = knowledge.get_active()
+        base = knowledge.get_base(bid) if bid else None
+        if not base:
+            return {"active": "", "name": ""}
+        return {"active": bid, "name": base.get("name") or ""}
 
     def reasoning_level(self):
         """桌面端复选框 → 推理强度（网页端会另外指定）。"""
@@ -2019,6 +2330,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                              if (reasoning or self.reasoning_check.isChecked())
                              else "off"),
             image_config=self.image_config(),
+            **self._kb_params(),
         )
         # 必须用 DirectConnection：这些 lambda 没有 QObject 归属，
         # 默认连接方式会把信号投递到"接收者线程"的事件循环，而 HTTP 线程没有
@@ -2030,6 +2342,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         worker.sources.connect(lambda items: q.put(("sources", items)), direct)
         worker.image_generated.connect(
             lambda md: q.put(("image", self._web_image(md))), direct)
+        worker.usage.connect(lambda u: q.put(("usage", u)), direct)
         worker.finished.connect(
             lambda content, reasoning: q.put(("done", content)), direct)
         worker.error_occurred.connect(lambda e: q.put(("error", e)), direct)
@@ -2240,11 +2553,46 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "- 用户问「你是什么模型」时，直接回答这个标识即可；"
                 "不要声称自己不知道具体是哪个模型。\n")
 
-    def _build_messages(self):
+    def _load_persona(self):
+        return {"name": self._settings.value("persona_name", "", type=str),
+                "avatar": self._settings.value("persona_avatar", "", type=str)}
+
+    def set_persona(self, name, avatar):
+        """网页个性化面板保存后同步过来：让模型真正知道自己叫什么。
+
+        调用方是 Web 的 HTTP 线程；这里只发信号，真正的存储/重渲染排队回
+        GUI 线程执行——跨线程调 QWebEnginePage.runJavaScript 会直接 SIGTRAP。
+        """
+        self._persona_request.emit(name or "", avatar or "")
+
+    def _apply_persona(self, name, avatar):
+        self.persona = {"name": (name or "").strip(), "avatar": (avatar or "").strip()}
+        self._settings.setValue("persona_name", self.persona["name"])
+        self._settings.setValue("persona_avatar", self.persona["avatar"])
+        if getattr(self, "_web_ready", False):
+            self._render_chat()
+
+    def persona_note(self):
+        """把用户配置的昵称/形象写进系统提示，模型才会以这个名字自称。"""
+        p = getattr(self, "persona", {}) or {}
+        name = (p.get("name") or "").strip()
+        if not name:
+            return ""
+        avatar = (p.get("avatar") or "").strip()
+        note = f"\n\n## 人格设定\n- 用户给你起了亲切的名字「{name}」，你就是「{name}」。\n"
+        if avatar and not avatar.startswith("data:"):
+            note += f"- 你的形象/头像是 {avatar}。\n"
+        note += (f"- 当用户问「你叫什么名字 / 你是谁」时，回答你是「{name}」"
+                 "（Graphic_Dev 客户端里的 AI 学习伙伴），不要说没有名字。\n"
+                 "- 日常对话自然地以这个名字自称，语气亲切、体贴、有温度。\n")
+        return note
+
+    def _build_messages(self, history=None):
         """把 chat_history 转成 API 需要的 messages（图片走 image_url 分片）。"""
         messages = [{"role": "system",
-                     "content": self.system_prompt() + self._identity_note()}]
-        for m in self.chat_history:
+                     "content": self.system_prompt() + self._identity_note()
+                                + self.persona_note()}]
+        for m in (self.chat_history if history is None else history):
             texts = m.get("texts") or []
             images = m.get("images") or []
 
@@ -2265,26 +2613,19 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 messages.append({"role": m["role"], "content": m["content"]})
         return messages
 
-    def on_send(self):
-        # ---------- 第一阶段：只做校验，不改任何界面状态 ----------
-        user_input = self.user_text.toPlainText().strip()
-        if not user_input and not self._attachments:
-            self.statusbar.showMessage("请输入消息或添加附件", 3000)
-            return
-
+    def _send_config(self):
+        """发送前的配置校验（on_send / 重新生成 / 编辑共用）。返回参数 dict 或 None。"""
         cfg = self.get_api_config()
         if cfg is None:
             QMessageBox.warning(self, "配置缺失", "请先在「API 配置」页填写地址和 KEY。")
             self.tabWidget.setCurrentWidget(self.page_api_config)
-            return
-
+            return None
         url, key = cfg
         model = self.current_model()
         if not model:
             QMessageBox.warning(self, "未选择模型", "请先在下方表格勾选一个模型，或点「添加模型」。")
             self.tabWidget.setCurrentWidget(self.page_api_config)
-            return
-
+            return None
         use_search = self.search_check.isChecked()
         search_key = self.search_key_text.text().strip()
         search_provider = self.search_provider_combo.currentData() or DEFAULT_PROVIDER
@@ -2295,6 +2636,45 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "请到「API 配置」页填写，或取消勾选「联网搜索」后再发送。")
             self.tabWidget.setCurrentWidget(self.page_api_config)
             self.search_key_text.setFocus()
+            return None
+        return {"url": url, "key": key, "model": model, "use_search": use_search,
+                "search_key": search_key, "search_provider": search_provider}
+
+    def _start_stream(self, sc, history=None):
+        """用当前 chat_history 起一条流式回答（不追加 user 消息）。"""
+        self._pending = False
+        self._render_chat()
+        self.textBrowser.page().runJavaScript("beginStream();")
+        self._set_streaming(True)
+        thinking = "深度思考" if self.reasoning_check.isChecked() else "快速回答"
+        self.statusbar.showMessage(f"模型 {sc['model']} 正在回答（{thinking}）...")
+        messages = self._build_messages(history)
+        self._pending_sources = []
+        self.worker = ChatWorker(sc["url"], sc["key"], sc["model"], messages,
+                                 use_search=sc["use_search"],
+                                 search_key=sc["search_key"],
+                                 search_provider=sc["search_provider"],
+                                 reasoning_level=self.reasoning_level(),
+                                 image_config=self.image_config(),
+                                 **self._kb_params())
+        self.worker.search_note.connect(self._on_search_note)
+        self.worker.reset_stream.connect(self._on_reset_stream)
+        self.worker.sources.connect(self._on_sources)
+        self.worker.image_generated.connect(self._on_image_generated)
+        self.worker.chunk.connect(self._on_stream_body)
+        self.worker.think.connect(self._on_stream_think)
+        self.worker.finished.connect(self.on_chat_finished)
+        self.worker.error_occurred.connect(self.on_chat_error)
+        self.worker.start()
+
+    def on_send(self):
+        # ---------- 第一阶段：只做校验，不改任何界面状态 ----------
+        user_input = self.user_text.toPlainText().strip()
+        if not user_input and not self._attachments:
+            self.statusbar.showMessage("请输入消息或添加附件", 3000)
+            return
+        sc = self._send_config()
+        if sc is None:
             return
 
         # ---------- 第二阶段：校验全部通过，才开始改状态 ----------
@@ -2314,33 +2694,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.user_text.clear()
         self._attachments = []
         self._rebuild_attach_bar()
-
-        self._pending = False
-        self._render_chat()
-        self.textBrowser.page().runJavaScript("beginStream();")
-
-        self._set_streaming(True)
-        thinking = "深度思考" if self.reasoning_check.isChecked() else "快速回答"
-        self.statusbar.showMessage(f"模型 {model} 正在回答（{thinking}）...")
-
-        messages = self._build_messages()
-
-        self._pending_sources = []
-        self.worker = ChatWorker(url, key, model, messages,
-                                 use_search=use_search,
-                                 search_key=search_key,
-                                 search_provider=search_provider,
-                                 reasoning_level=self.reasoning_level(),
-                                 image_config=self.image_config())
-        self.worker.search_note.connect(self._on_search_note)
-        self.worker.reset_stream.connect(self._on_reset_stream)
-        self.worker.sources.connect(self._on_sources)
-        self.worker.image_generated.connect(self._on_image_generated)
-        self.worker.chunk.connect(self._on_stream_body)
-        self.worker.think.connect(self._on_stream_think)
-        self.worker.finished.connect(self.on_chat_finished)
-        self.worker.error_occurred.connect(self.on_chat_error)
-        self.worker.start()
+        self._start_stream(sc)
 
     def _push_stream(self, kind, text):
         self.textBrowser.page().runJavaScript(
@@ -2378,11 +2732,26 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def on_chat_finished(self, reply, reasoning):
         self.textBrowser.page().runJavaScript("endStream();")   # 先清理流式状态
         self._pending = False
+        target = self._regen_target
+        self._regen_target = None
         if reply.strip() or reasoning.strip():
-            self.chat_history.append({"role": "assistant",
-                                      "content": reply,
-                                      "reasoning": reasoning,
-                                      "sources": self._pending_sources})
+            ver = {"content": reply, "reasoning": reasoning,
+                   "sources": self._pending_sources,
+                   "usage": dict(self.worker._usage) if self.worker else {}}
+            if target is not None and 0 <= target < len(self.chat_history) \
+                    and self.chat_history[target].get("role") == "assistant":
+                # 重新生成：追加为新版本，旧版本保留供对比
+                m = self.chat_history[target]
+                versions = m.setdefault("versions", [])
+                versions.append(ver)
+                m["version"] = len(versions) - 1
+                m["content"] = ver["content"]
+                m["reasoning"] = ver["reasoning"]
+                m["sources"] = ver["sources"]
+                m["usage"] = ver["usage"]
+            else:
+                self.chat_history.append(dict(ver, role="assistant",
+                                              versions=[ver], version=0))
         self._pending_sources = []
         self._save_history()
         self._render_chat()
@@ -2392,6 +2761,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def on_chat_error(self, error_msg):
         self.textBrowser.page().runJavaScript("endStream();")
         self._pending = False
+        self._regen_target = None      # 失败的重新生成不改动旧回答
         self._render_chat()
         self._set_streaming(False)
         self.statusbar.showMessage("请求失败")

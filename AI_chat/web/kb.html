@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识库投喂台 · STARTY</title>
+<link rel="stylesheet" href="css/kb.css">
+</head>
+<body>
+<div class="kb-app">
+
+  <header class="kb-top">
+    <div class="kb-brand">
+      <span class="kb-logo">📚</span>
+      <div>
+        <h1>知识库投喂台</h1>
+        <p>导入教材 / 讲义 / 知识点，让 Agent 带着出处辅助学习</p>
+      </div>
+    </div>
+    <div class="kb-top-actions">
+      <button id="themeBtn" class="kb-ghost" title="切换深色 / 浅色">🌓</button>
+      <a id="backChat" class="kb-ghost" href="#">← 回到对话</a>
+    </div>
+  </header>
+
+  <div class="kb-body">
+
+    <aside class="kb-side">
+      <div class="kb-side-head">
+        <h2>知识库</h2>
+        <button id="newBaseBtn" class="kb-primary kb-sm">＋ 新建</button>
+      </div>
+      <div id="baseList" class="kb-base-list"></div>
+      <div class="kb-new-base">
+        <input id="newBaseName" placeholder="新知识库名称，如「高等数学」">
+        <input id="newBaseEmbed" placeholder="嵌入模型（可选，留空纯全文检索）">
+      </div>
+      <p class="kb-hint">激活某个知识库后，对话中的 Agent 会自动按需检索它；嵌入模型走 API，不占用本机算力。</p>
+    </aside>
+
+    <main class="kb-main">
+      <div id="emptyBase" class="kb-empty">
+        <div class="kb-empty-icon">🗂️</div>
+        <h3>还没有知识库</h3>
+        <p>在左侧新建一个知识库，然后把教材 PDF / DOCX / Markdown 投喂进来。</p>
+      </div>
+
+      <div id="basePanel" hidden>
+        <div class="kb-panel-head">
+          <h2 id="curBaseName">—</h2>
+          <div class="kb-stats" id="curStats"></div>
+          <label class="kb-active-toggle">
+            <input type="checkbox" id="activeToggle"> 在对话中启用
+          </label>
+        </div>
+
+        <section class="kb-card">
+          <h3>投喂文档</h3>
+          <div id="dropZone" class="kb-drop">
+            <div class="kb-drop-icon">⬆️</div>
+            <p>拖拽文件到这里，或 <button id="pickBtn" class="kb-link">选择文件</button></p>
+            <p class="kb-drop-sub">支持 PDF / DOCX / MD / TXT · 自动切块 + 建索引</p>
+            <input type="file" id="fileInput" multiple hidden
+                   accept=".pdf,.docx,.md,.markdown,.txt,.csv,.json">
+          </div>
+          <ul id="uploadList" class="kb-upload-list"></ul>
+        </section>
+
+        <section class="kb-card">
+          <h3>已投喂文档</h3>
+          <div id="docList" class="kb-doc-list"></div>
+        </section>
+
+        <section class="kb-card">
+          <h3>手动知识点</h3>
+          <div class="kb-manual">
+            <input id="manualHeading" placeholder="标题 / 章节（可选），如「第三章 · 中值定理」">
+            <textarea id="manualText" rows="3" placeholder="粘贴一条知识点、定义或公式…"></textarea>
+            <button id="manualAdd" class="kb-primary kb-sm">＋ 加入知识库</button>
+          </div>
+        </section>
+
+        <section class="kb-card">
+          <h3>检索试验台</h3>
+          <div class="kb-search-row">
+            <input id="searchInput" placeholder="输入问题，看看会召回哪些知识块…">
+            <button id="searchBtn" class="kb-primary kb-sm">检索</button>
+          </div>
+          <div id="searchResults" class="kb-results"></div>
+        </section>
+
+        <section class="kb-card">
+          <h3>知识块管理</h3>
+          <div class="kb-chunk-filter">
+            <select id="chunkDocFilter"><option value="">全部文档</option></select>
+          </div>
+          <div id="chunkList" class="kb-chunk-list"></div>
+        </section>
+      </div>
+    </main>
+
+  </div>
+</div>
+<div id="toast" class="kb-toast" hidden></div>
+<script src="js/kb.js"></script>
+</body>
+</html>

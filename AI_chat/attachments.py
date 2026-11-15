@@ -118,13 +118,13 @@ def _norm(text: str) -> str:
     return "".join(out)
 
 
-def _extract_pdf(path: Path) -> str:
+def _extract_pdf(path: Path, max_pages: int = PDF_MAX_PAGES) -> str:
     doc = QPdfDocument()
     try:
         err = doc.load(str(path))
         if err != QPdfDocument.Error.None_:
             raise AttachmentError(f"PDF 无法打开（{err.name}）")
-        pages = min(doc.pageCount(), PDF_MAX_PAGES)
+        pages = min(doc.pageCount(), max_pages)
         if pages <= 0:
             raise AttachmentError("PDF 没有页面")
         chunks = []
@@ -171,13 +171,14 @@ def _extract_plain(path: Path) -> str:
         return path.read_text(encoding="gbk", errors="replace")
 
 
-def extract_text(path) -> str:
-    """按后缀抽取纯文本，超长会被截断。"""
+def extract_text(path, max_chars: int = MAX_CHARS_PER_FILE,
+                 max_pages: int = PDF_MAX_PAGES) -> str:
+    """按后缀抽取纯文本；max_chars=None 表示不截断（知识库投喂用）。"""
     path = Path(path)
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
-        text = _extract_pdf(path)
+        text = _extract_pdf(path, max_pages)
     elif suffix == ".docx":
         text = _extract_docx(path)
     elif suffix in TEXT_SUFFIXES:
@@ -188,8 +189,8 @@ def extract_text(path) -> str:
     text = _norm(text).strip()
     if not text:
         raise AttachmentError("没能从这个文件里提取到文字（可能是扫描件或空文件）")
-    if len(text) > MAX_CHARS_PER_FILE:
-        text = text[:MAX_CHARS_PER_FILE] + f"\n…（内容过长，已截断到 {MAX_CHARS_PER_FILE} 字）"
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars] + f"\n…（内容过长，已截断到 {max_chars} 字）"
     return text
 
 
