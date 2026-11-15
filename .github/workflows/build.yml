@@ -50,7 +50,7 @@ jobs:
       - name: 校验前端脚本语法
         run: |
           set -e
-          for f in AI_chat/web/js/app.js AI_chat/web/js/chat.js AI_chat/web/js/webchat.js; do
+          for f in AI_chat/web/js/app.js AI_chat/web/js/chat.js AI_chat/web/js/webchat.js AI_chat/web/js/kb.js; do
             node --check "$f" && echo "OK $f"
           done
 
@@ -261,8 +261,8 @@ jobs:
         run: |
           set -e
           for name in theme.qss theme_dark.qss chevron-down.svg chevron-down-dark.svg \
-                      starty.html chat.html webchat.html app.js katex.min.js \
-                      katex.min.css appicon.png; do
+                      starty.html chat.html webchat.html kb.html app.js kb.js kb.css \
+                      katex.min.js katex.min.css appicon.png; do
             find dist -name "$name" | grep -q . || { echo "❌ 包里没有 $name"; exit 1; }
             echo "OK $name"
           done
